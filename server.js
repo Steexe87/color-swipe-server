@@ -46,6 +46,42 @@ function getRoundDuration(score1, score2) {
     return 20;
 }
 
+// *** INIZIO BLOCCO NUOVO/MODIFICATO: Funzione centralizzata per i risultati ***
+async function processGameResult(winnerUsername, loserUsername, roomId) {
+    const room = gameRooms[roomId];
+    if (!room || room.isFinished) return;
+    room.isFinished = true;
+
+    try {
+        const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]);
+        if (playersRes.rows.length < 2) {
+            console.log("Uno o entrambi i giocatori non trovati nel DB per l'aggiornamento del punteggio.");
+            return;
+        }
+
+        const winner = playersRes.rows.find(r => r.username === winnerUsername);
+        const loser = playersRes.rows.find(r => r.username === loserUsername);
+
+        const newWinnerRating = calculateElo(winner.rankscore, loser.rankscore, 1);
+        const newLoserRating = calculateElo(loser.rankscore, winner.rankscore, 0);
+
+        await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newWinnerRating, winnerUsername]);
+        await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newLoserRating, loserUsername]);
+        
+        const winnerSocketId = Object.keys(room.players).find(id => room.players[id].username === winnerUsername);
+        const loserSocketId = Object.keys(room.players).find(id => room.players[id].username === loserUsername);
+
+        if (winnerSocketId) io.to(winnerSocketId).emit('updateRankScore', { newRankScore: newWinnerRating });
+        if (loserSocketId) io.to(loserSocketId).emit('updateRankScore', { newRankScore: newLoserRating });
+
+        console.log(`Punteggi aggiornati: ${winnerUsername} ${newWinnerRating}, ${loserUsername} ${newLoserRating}`);
+    } catch (err) {
+        console.error("Errore durante l'aggiornamento dei punteggi (processGameResult):", err);
+    }
+}
+// *** FINE BLOCCO NUOVO/MODIFICATO ***
+
+
 function startNewRound(roomId, room) {
     console.log(`Avvio nuovo round per la stanza ${roomId}`);
     room.rematchReady = {};
@@ -54,7 +90,6 @@ function startNewRound(roomId, room) {
     if (playerSocketIds.length < 2) return;
     const player1 = room.players[playerSocketIds[0]];
     const player2 = room.players[playerSocketIds[1]];
-    // *** CORREZIONE: Usa rankScore (camelCase) come negli oggetti in memoria ***
     const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
     const roundData = {
         targetColor: getRandomColor(),
@@ -88,11 +123,10 @@ function findMatch() {
         for (let j = i + 1; j < matchmakingQueue.length; j++) {
             const player1 = matchmakingQueue[i];
             const player2 = matchmakingQueue[j];
-            // *** CORREZIONE: Usa rankScore (camelCase) come nei dati inviati dal client ***
             if (Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200) {
                 console.log(`🤝 Match casuale trovato tra ${player1.data.username} e ${player2.data.username}`);
-                matchmakingQueue.splice(j, 1);
-                matchmakingQueue.splice(i, 1);
+                const matchedPlayers = [player1, player2];
+                matchmakingQueue = matchmakingQueue.filter(p => !matchedPlayers.includes(p));
                 startGameForPair(player1.socket, player1.data, player2.socket, player2.data);
                 return;
             }
@@ -122,7 +156,6 @@ io.on('connection', (socket) => {
             if (res.rows.length === 0) return socket.emit('forceLogin');
             const row = res.rows[0];
             console.log(`Utente ${username} ri-autenticato.`);
-            // Mappa 'rankscore' (db) a 'rankScore' (client)
             socket.emit('loginSuccess', { username: row.username, rankScore: row.rankscore });
         } catch (err) {
             console.error("Errore rejoin:", err);
@@ -162,7 +195,6 @@ io.on('connection', (socket) => {
 
             if (match) {
                 console.log(`Utente ${username} autenticato.`);
-                // Mappa 'rankscore' (db) a 'rankScore' (client)
                 socket.emit('loginSuccess', { username: user.username, rankScore: user.rankscore });
             } else {
                 console.log(`Tentativo di login fallito per ${username}.`);
@@ -204,35 +236,11 @@ io.on('connection', (socket) => {
         if (code) delete privateRooms[code];
     });
 
-    socket.on('gameOver', async ({ winnerUsername, loserUsername, roomId }) => {
-        const room = gameRooms[roomId];
-        if (!room || room.isFinished) return;
-        room.isFinished = true;
-
-        try {
-            const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]);
-            if (playersRes.rows.length < 2) return;
-
-            const winner = playersRes.rows.find(r => r.username === winnerUsername);
-            const loser = playersRes.rows.find(r => r.username === loserUsername);
-
-            const newWinnerRating = calculateElo(winner.rankscore, loser.rankscore, 1);
-            const newLoserRating = calculateElo(loser.rankscore, winner.rankscore, 0);
-
-            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newWinnerRating, winnerUsername]);
-            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newLoserRating, loserUsername]);
-            
-            const winnerSocketId = Object.keys(room.players).find(id => room.players[id].username === winnerUsername);
-            const loserSocketId = Object.keys(room.players).find(id => room.players[id].username === loserUsername);
-
-            if (winnerSocketId) io.to(winnerSocketId).emit('updateRankScore', { newRankScore: newWinnerRating });
-            if (loserSocketId) io.to(loserSocketId).emit('updateRankScore', { newRankScore: newLoserRating });
-
-            console.log(`Punteggi aggiornati: ${winnerUsername} ${newWinnerRating}, ${loserUsername} ${newLoserRating}`);
-        } catch (err) {
-            console.error("Errore gameOver:", err);
-        }
+    // *** INIZIO BLOCCO MODIFICATO: Ora chiama la nuova funzione ***
+    socket.on('gameOver', ({ winnerUsername, loserUsername, roomId }) => {
+        processGameResult(winnerUsername, loserUsername, roomId);
     });
+    // *** FINE BLOCCO MODIFICATO ***
     
     socket.on('getLeaderboard', async ({ username }) => {
         try {
@@ -241,7 +249,6 @@ io.on('connection', (socket) => {
             const topRows = topRes.rows;
 
             const isUserInTop20 = topRows.some(p => p.username === username);
-            // Mappa 'rankscore' (db) a 'rankScore' (client)
             let finalData = topRows.map(p => ({...p, rankScore: p.rankscore, isCurrentUser: p.username === username}));
 
             if (!isUserInTop20) {
@@ -249,7 +256,6 @@ io.on('connection', (socket) => {
                 const userRes = await pool.query(userRankQuery, [username]);
                 if (userRes.rows.length > 0) {
                     const userRow = userRes.rows[0];
-                    // Mappa 'rankscore' (db) a 'rankScore' (client)
                     finalData.push({...userRow, rankScore: userRow.rankscore, isCurrentUser: true});
                 }
             }
@@ -273,20 +279,19 @@ io.on('connection', (socket) => {
 
         const opponentSocketId = Object.keys(room.players).find(id => id !== abandoningSocketId);
         
-        if (!room.isFinished && opponentSocketId) {
-            const abandoningPlayer = room.players[abandoningSocketId];
-            const winningPlayer = room.players[opponentSocketId];
-            console.log(`${abandoningPlayer.username} ha abbandonato. ${winningPlayer.username} vince.`);
-            // Simula un "gameOver" per aggiornare i punteggi
-            await socket.emit('gameOver', {
-                winnerUsername: winningPlayer.username,
-                loserUsername: abandoningPlayer.username,
-                roomId
-            });
-        }
-        
-        if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
-            io.to(opponentSocketId).emit(room.isFinished ? 'opponentLeftRematch' : 'opponentDisconnected');
+        if (opponentSocketId) {
+            // *** INIZIO BLOCCO MODIFICATO: Ora chiama la nuova funzione correttamente ***
+            if (!room.isFinished) {
+                const abandoningPlayer = room.players[abandoningSocketId];
+                const winningPlayer = room.players[opponentSocketId];
+                console.log(`${abandoningPlayer.username} ha abbandonato. ${winningPlayer.username} vince.`);
+                await processGameResult(winningPlayer.username, abandoningPlayer.username, roomId);
+            }
+            // *** FINE BLOCCO MODIFICATO ***
+            
+            if (io.sockets.sockets.has(opponentSocketId)) {
+                io.to(opponentSocketId).emit(room.isFinished ? 'opponentLeftRematch' : 'opponentDisconnected');
+            }
         }
         
         delete gameRooms[roomId];
