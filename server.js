@@ -7,6 +7,9 @@ const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcrypt');
 
 const app = express();
+app.get('/', (req, res) => {
+  res.send('Il server di Color Swipe Duel è attivo!');
+});
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 const PORT = process.env.PORT || 3000;
