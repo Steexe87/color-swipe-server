@@ -54,7 +54,8 @@ function startNewRound(roomId, room) {
     if (playerSocketIds.length < 2) return;
     const player1 = room.players[playerSocketIds[0]];
     const player2 = room.players[playerSocketIds[1]];
-    const roundDuration = getRoundDuration(player1.rankscore, player2.rankscore); // Corretto
+    // *** CORREZIONE: Usa rankScore (camelCase) come negli oggetti in memoria ***
+    const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
     const roundData = {
         targetColor: getRandomColor(),
         initialColors: {
@@ -87,7 +88,8 @@ function findMatch() {
         for (let j = i + 1; j < matchmakingQueue.length; j++) {
             const player1 = matchmakingQueue[i];
             const player2 = matchmakingQueue[j];
-            if (Math.abs(player1.data.rankscore - player2.data.rankscore) <= 200) { // Corretto
+            // *** CORREZIONE: Usa rankScore (camelCase) come nei dati inviati dal client ***
+            if (Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200) {
                 console.log(`🤝 Match casuale trovato tra ${player1.data.username} e ${player2.data.username}`);
                 matchmakingQueue.splice(j, 1);
                 matchmakingQueue.splice(i, 1);
@@ -116,11 +118,12 @@ io.on('connection', (socket) => {
         if (!username) return;
         socket.username = username;
         try {
-            const res = await pool.query('SELECT username, rankscore FROM players WHERE username = $1', [username]); // Corretto
+            const res = await pool.query('SELECT username, rankscore FROM players WHERE username = $1', [username]);
             if (res.rows.length === 0) return socket.emit('forceLogin');
             const row = res.rows[0];
             console.log(`Utente ${username} ri-autenticato.`);
-            socket.emit('loginSuccess', { username: row.username, rankScore: row.rankscore }); // Corretto
+            // Mappa 'rankscore' (db) a 'rankScore' (client)
+            socket.emit('loginSuccess', { username: row.username, rankScore: row.rankscore });
         } catch (err) {
             console.error("Errore rejoin:", err);
             socket.emit('forceLogin');
@@ -137,7 +140,7 @@ io.on('connection', (socket) => {
             
             const hash = await bcrypt.hash(password, SALT_ROUNDS);
             const startScore = 1000;
-            await pool.query('INSERT INTO players(username, password, rankscore) VALUES($1, $2, $3)', [username, hash, startScore]); // Corretto
+            await pool.query('INSERT INTO players(username, password, rankscore) VALUES($1, $2, $3)', [username, hash, startScore]);
             
             console.log(`Nuovo giocatore registrato: ${username}`);
             socket.emit('registerSuccess', { username, rankScore: startScore });
@@ -159,7 +162,8 @@ io.on('connection', (socket) => {
 
             if (match) {
                 console.log(`Utente ${username} autenticato.`);
-                socket.emit('loginSuccess', { username: user.username, rankScore: user.rankscore }); // Corretto
+                // Mappa 'rankscore' (db) a 'rankScore' (client)
+                socket.emit('loginSuccess', { username: user.username, rankScore: user.rankscore });
             } else {
                 console.log(`Tentativo di login fallito per ${username}.`);
                 socket.emit('loginError', 'Password errata.');
@@ -170,8 +174,14 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('findMatch', (playerData) => matchmakingQueue.push({ socket, data: playerData }) && findMatch());
-    socket.on('cancelFindMatch', () => matchmakingQueue = matchmakingQueue.filter(p => p.socket.id !== socket.id));
+    socket.on('findMatch', (playerData) => {
+        matchmakingQueue.push({ socket, data: playerData });
+        findMatch();
+    });
+
+    socket.on('cancelFindMatch', () => {
+        matchmakingQueue = matchmakingQueue.filter(p => p.socket.id !== socket.id);
+    });
 
     socket.on('createPrivateRoom', (playerData) => {
         const code = generateRoomCode();
@@ -200,17 +210,17 @@ io.on('connection', (socket) => {
         room.isFinished = true;
 
         try {
-            const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]); // Corretto
+            const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]);
             if (playersRes.rows.length < 2) return;
 
             const winner = playersRes.rows.find(r => r.username === winnerUsername);
             const loser = playersRes.rows.find(r => r.username === loserUsername);
 
-            const newWinnerRating = calculateElo(winner.rankscore, loser.rankscore, 1); // Corretto
-            const newLoserRating = calculateElo(loser.rankscore, winner.rankscore, 0); // Corretto
+            const newWinnerRating = calculateElo(winner.rankscore, loser.rankscore, 1);
+            const newLoserRating = calculateElo(loser.rankscore, winner.rankscore, 0);
 
-            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newWinnerRating, winnerUsername]); // Corretto
-            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newLoserRating, loserUsername]); // Corretto
+            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newWinnerRating, winnerUsername]);
+            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newLoserRating, loserUsername]);
             
             const winnerSocketId = Object.keys(room.players).find(id => room.players[id].username === winnerUsername);
             const loserSocketId = Object.keys(room.players).find(id => room.players[id].username === loserUsername);
@@ -226,19 +236,21 @@ io.on('connection', (socket) => {
     
     socket.on('getLeaderboard', async ({ username }) => {
         try {
-            const top20Query = 'SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players ORDER BY rankscore DESC LIMIT 20'; // Corretto
+            const top20Query = 'SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players ORDER BY rankscore DESC LIMIT 20';
             const topRes = await pool.query(top20Query);
             const topRows = topRes.rows;
 
             const isUserInTop20 = topRows.some(p => p.username === username);
-            let finalData = topRows.map(p => ({...p, rankScore: p.rankscore, isCurrentUser: p.username === username})); // Corretto
+            // Mappa 'rankscore' (db) a 'rankScore' (client)
+            let finalData = topRows.map(p => ({...p, rankScore: p.rankscore, isCurrentUser: p.username === username}));
 
             if (!isUserInTop20) {
-                const userRankQuery = 'WITH Ranks AS (SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players) SELECT * FROM Ranks WHERE username = $1'; // Corretto
+                const userRankQuery = 'WITH Ranks AS (SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players) SELECT * FROM Ranks WHERE username = $1';
                 const userRes = await pool.query(userRankQuery, [username]);
                 if (userRes.rows.length > 0) {
                     const userRow = userRes.rows[0];
-                    finalData.push({...userRow, rankScore: userRow.rankscore, isCurrentUser: true}); // Corretto
+                    // Mappa 'rankscore' (db) a 'rankScore' (client)
+                    finalData.push({...userRow, rankScore: userRow.rankscore, isCurrentUser: true});
                 }
             }
             socket.emit('leaderboardData', finalData);
@@ -265,6 +277,7 @@ io.on('connection', (socket) => {
             const abandoningPlayer = room.players[abandoningSocketId];
             const winningPlayer = room.players[opponentSocketId];
             console.log(`${abandoningPlayer.username} ha abbandonato. ${winningPlayer.username} vince.`);
+            // Simula un "gameOver" per aggiornare i punteggi
             await socket.emit('gameOver', {
                 winnerUsername: winningPlayer.username,
                 loserUsername: abandoningPlayer.username,
