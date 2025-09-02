@@ -35,6 +35,7 @@ db.run(`CREATE TABLE IF NOT EXISTS players (
 let matchmakingQueue = [];
 const K_FACTOR = 32;
 const gameRooms = {};
+const privateRooms = {}; // *** NUOVO: Oggetto per le stanze private in attesa
 
 function calculateElo(playerRating, opponentRating, score) {
     const expectedScore = 1 / (1 + Math.pow(10, (opponentRating - playerRating) / 400));
@@ -46,8 +47,6 @@ function getRandomColor() {
     return '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
 }
 
-// *** INIZIO BLOCCO NUOVO/MODIFICATO ***
-// Funzione che determina la durata del round in base al rank più alto
 function getRoundDuration(score1, score2) {
     const highestScore = Math.max(score1, score2);
     if (highestScore >= 1500) return 10; // Platino e Diamante
@@ -61,6 +60,7 @@ function startNewRound(roomId, room) {
     room.isFinished = false;
 
     const playerSocketIds = Object.keys(room.players);
+    if (playerSocketIds.length < 2) return; // Sicurezza
     const player1 = room.players[playerSocketIds[0]];
     const player2 = room.players[playerSocketIds[1]];
 
@@ -74,12 +74,10 @@ function startNewRound(roomId, room) {
             [playerSocketIds[1]]: getRandomColor(),
         },
         players: Object.values(room.players),
-        duration: roundDuration // Aggiunta la durata del round
+        duration: roundDuration
     };
     io.to(roomId).emit('gameEvent', { event: 'roundStartData', payload: roundData });
 }
-// *** FINE BLOCCO NUOVO/MODIFICATO ***
-
 
 function findMatch() {
     for (let i = 0; i < matchmakingQueue.length; i++) {
@@ -87,34 +85,56 @@ function findMatch() {
             const player1 = matchmakingQueue[i];
             const player2 = matchmakingQueue[j];
 
+            // Criterio di matchmaking basato sul punteggio
             if (Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200) {
-                console.log(`🤝 Match trovato tra ${player1.data.username} e ${player2.data.username}`);
+                console.log(`🤝 Match casuale trovato tra ${player1.data.username} e ${player2.data.username}`);
                 
+                // Rimuovi i giocatori dalla coda
                 matchmakingQueue.splice(j, 1);
                 matchmakingQueue.splice(i, 1);
 
-                const roomId = `room-${player1.socket.id}-${player2.socket.id}`;
-                player1.socket.join(roomId);
-                player2.socket.join(roomId);
-                
-                gameRooms[roomId] = {
-                    players: {
-                        [player1.socket.id]: { ...player1.data, isReady: false },
-                        [player2.socket.id]: { ...player2.data, isReady: false }
-                    },
-                    rematchReady: {},
-                    isFinished: false
-                };
-
-                io.to(roomId).emit('gameReady', { 
-                    roomId: roomId, 
-                    players: Object.values(gameRooms[roomId].players)
-                });
+                // Avvia la partita
+                startGameForPair(player1.socket, player1.data, player2.socket, player2.data);
                 return;
             }
         }
     }
 }
+
+// *** INIZIO BLOCCO NUOVO/MODIFICATO: Funzioni per stanze private e avvio partita ***
+function generateRoomCode() {
+    let code;
+    const chars = 'ABCDEFGHIJKLMNPQRSTUVWXYZ123456789';
+    do {
+        code = '';
+        for (let i = 0; i < 5; i++) {
+            code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+    } while (privateRooms[code]); // Garantisce che il codice sia unico
+    return code;
+}
+
+function startGameForPair(socket1, data1, socket2, data2) {
+    const roomId = `room-${socket1.id}-${socket2.id}`;
+    socket1.join(roomId);
+    socket2.join(roomId);
+    
+    gameRooms[roomId] = {
+        players: {
+            [socket1.id]: { ...data1, isReady: false },
+            [socket2.id]: { ...data2, isReady: false }
+        },
+        rematchReady: {},
+        isFinished: false
+    };
+
+    io.to(roomId).emit('gameReady', { 
+        roomId: roomId, 
+        players: Object.values(gameRooms[roomId].players)
+    });
+}
+// *** FINE BLOCCO NUOVO/MODIFICATO ***
+
 
 // --- Gestione Connessioni Socket ---
 io.on('connection', (socket) => {
@@ -173,7 +193,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('findMatch', (playerData) => {
-        console.log(`${playerData.username} sta cercando una partita...`);
+        console.log(`${playerData.username} sta cercando una partita casuale...`);
         matchmakingQueue = matchmakingQueue.filter(p => p.data.username !== playerData.username);
         matchmakingQueue.push({ socket: socket, data: playerData });
         findMatch();
@@ -181,8 +201,46 @@ io.on('connection', (socket) => {
 
     socket.on('cancelFindMatch', () => {
         matchmakingQueue = matchmakingQueue.filter(p => p.socket.id !== socket.id);
-        if (socket.username) console.log(`Ricerca annullata per ${socket.username}`);
+        if (socket.username) console.log(`Ricerca casuale annullata per ${socket.username}`);
     });
+    
+    // *** INIZIO BLOCCO NUOVO: Gestori per stanze private ***
+    socket.on('createPrivateRoom', (playerData) => {
+        const code = generateRoomCode();
+        privateRooms[code] = {
+            creatorSocket: socket,
+            creatorData: playerData
+        };
+        console.log(`Stanza privata creata da ${playerData.username} con codice ${code}`);
+        socket.emit('privateRoomCreated', { code });
+    });
+
+    socket.on('joinPrivateRoom', ({ code, playerData }) => {
+        const roomToJoin = privateRooms[code];
+        if (!roomToJoin) {
+            return socket.emit('joinRoomError', 'Stanza non trovata o scaduta.');
+        }
+
+        console.log(`${playerData.username} si unisce alla stanza ${code}`);
+        const { creatorSocket, creatorData } = roomToJoin;
+        
+        // Avvia la partita per la coppia
+        startGameForPair(creatorSocket, creatorData, socket, playerData);
+        
+        // Rimuovi la stanza dalla lista d'attesa
+        delete privateRooms[code];
+    });
+
+    socket.on('cancelPrivateRoom', () => {
+        const roomCodeToDelete = Object.keys(privateRooms).find(
+            code => privateRooms[code].creatorSocket.id === socket.id
+        );
+        if (roomCodeToDelete) {
+            delete privateRooms[roomCodeToDelete];
+            console.log(`Stanza privata ${roomCodeToDelete} annullata da ${socket.username}`);
+        }
+    });
+    // *** FINE BLOCCO NUOVO ***
 
     socket.on('gameOver', ({ winnerUsername, loserUsername, roomId }) => {
         const room = gameRooms[roomId];
@@ -222,9 +280,7 @@ io.on('connection', (socket) => {
         
         db.all(top20Query, [], (err, topRows) => {
             if (err) return;
-
             const isUserInTop20 = topRows.some(p => p.username === username);
-
             if (isUserInTop20) {
                  const finalData = topRows.map(p => ({...p, isCurrentUser: p.username === username}));
                  socket.emit('leaderboardData', finalData);
@@ -336,8 +392,20 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         const disconnectedSocketId = socket.id;
         console.log(`❌ Utente disconnesso: ${disconnectedSocketId}`);
+        // Rimuovi dalla coda di matchmaking casuale
         matchmakingQueue = matchmakingQueue.filter(player => player.socket.id !== disconnectedSocketId);
         
+        // *** INIZIO BLOCCO MODIFICATO: Pulisci anche le stanze private ***
+        const privateRoomCode = Object.keys(privateRooms).find(
+            code => privateRooms[code].creatorSocket.id === disconnectedSocketId
+        );
+        if (privateRoomCode) {
+            delete privateRooms[privateRoomCode];
+            console.log(`Stanza privata ${privateRoomCode} eliminata a causa della disconnessione del creatore.`);
+        }
+        // *** FINE BLOCCO MODIFICATO ***
+        
+        // Gestisci l'abbandono di una partita in corso
         let roomIdFound = null;
         for (const roomId in gameRooms) {
             if (gameRooms[roomId].players[disconnectedSocketId]) {
