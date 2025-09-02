@@ -3,7 +3,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-const { Pool } = require('pg'); // <-- MODIFICATO: Usiamo il driver 'pg'
+const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 
 const app = express();
@@ -17,7 +17,6 @@ const PORT = process.env.PORT || 3000;
 const SALT_ROUNDS = 10;
 
 // --- Setup del Database PostgreSQL ---
-// IMPORTANTE: La connection string va messa nelle Environment Variables su Render!
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
 });
@@ -55,7 +54,7 @@ function startNewRound(roomId, room) {
     if (playerSocketIds.length < 2) return;
     const player1 = room.players[playerSocketIds[0]];
     const player2 = room.players[playerSocketIds[1]];
-    const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
+    const roundDuration = getRoundDuration(player1.rankscore, player2.rankscore); // Corretto
     const roundData = {
         targetColor: getRandomColor(),
         initialColors: {
@@ -88,7 +87,7 @@ function findMatch() {
         for (let j = i + 1; j < matchmakingQueue.length; j++) {
             const player1 = matchmakingQueue[i];
             const player2 = matchmakingQueue[j];
-            if (Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200) {
+            if (Math.abs(player1.data.rankscore - player2.data.rankscore) <= 200) { // Corretto
                 console.log(`🤝 Match casuale trovato tra ${player1.data.username} e ${player2.data.username}`);
                 matchmakingQueue.splice(j, 1);
                 matchmakingQueue.splice(i, 1);
@@ -113,16 +112,15 @@ function generateRoomCode() {
 io.on('connection', (socket) => {
     console.log(`✅ Un utente si è connesso: ${socket.id}`);
 
-    // Le funzioni sono state convertite in async/await per gestire le query al database
     socket.on('rejoinWithUsername', async ({ username }) => {
         if (!username) return;
         socket.username = username;
         try {
-            const res = await pool.query('SELECT * FROM players WHERE username = $1', [username]);
+            const res = await pool.query('SELECT username, rankscore FROM players WHERE username = $1', [username]); // Corretto
             if (res.rows.length === 0) return socket.emit('forceLogin');
             const row = res.rows[0];
             console.log(`Utente ${username} ri-autenticato.`);
-            socket.emit('loginSuccess', { username: row.username, rankScore: row.rankScore });
+            socket.emit('loginSuccess', { username: row.username, rankScore: row.rankscore }); // Corretto
         } catch (err) {
             console.error("Errore rejoin:", err);
             socket.emit('forceLogin');
@@ -134,13 +132,13 @@ io.on('connection', (socket) => {
             return socket.emit('registerError', 'Username o password non validi.');
         }
         try {
-            const existingUser = await pool.query('SELECT * FROM players WHERE username = $1', [username]);
+            const existingUser = await pool.query('SELECT username FROM players WHERE username = $1', [username]);
             if (existingUser.rows.length > 0) return socket.emit('registerError', 'Username già in uso.');
-
+            
             const hash = await bcrypt.hash(password, SALT_ROUNDS);
             const startScore = 1000;
-            await pool.query('INSERT INTO players(username, password, "rankScore") VALUES($1, $2, $3)', [username, hash, startScore]);
-
+            await pool.query('INSERT INTO players(username, password, rankscore) VALUES($1, $2, $3)', [username, hash, startScore]); // Corretto
+            
             console.log(`Nuovo giocatore registrato: ${username}`);
             socket.emit('registerSuccess', { username, rankScore: startScore });
         } catch (err) {
@@ -148,20 +146,20 @@ io.on('connection', (socket) => {
             socket.emit('registerError', 'Errore del server.');
         }
     });
-
+    
     socket.on('login', async ({ username, password }) => {
         if (!username || !password) return socket.emit('loginError', 'Username o password mancanti.');
         socket.username = username;
         try {
             const res = await pool.query('SELECT * FROM players WHERE username = $1', [username]);
             if (res.rows.length === 0) return socket.emit('loginError', 'Utente non trovato.');
-
+            
             const user = res.rows[0];
             const match = await bcrypt.compare(password, user.password);
 
             if (match) {
                 console.log(`Utente ${username} autenticato.`);
-                socket.emit('loginSuccess', { username: user.username, rankScore: user.rankScore });
+                socket.emit('loginSuccess', { username: user.username, rankScore: user.rankscore }); // Corretto
             } else {
                 console.log(`Tentativo di login fallito per ${username}.`);
                 socket.emit('loginError', 'Password errata.');
@@ -202,18 +200,18 @@ io.on('connection', (socket) => {
         room.isFinished = true;
 
         try {
-            const playersRes = await pool.query('SELECT * FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]);
+            const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]); // Corretto
             if (playersRes.rows.length < 2) return;
 
             const winner = playersRes.rows.find(r => r.username === winnerUsername);
             const loser = playersRes.rows.find(r => r.username === loserUsername);
 
-            const newWinnerRating = calculateElo(winner.rankScore, loser.rankScore, 1);
-            const newLoserRating = calculateElo(loser.rankScore, winner.rankScore, 0);
+            const newWinnerRating = calculateElo(winner.rankscore, loser.rankscore, 1); // Corretto
+            const newLoserRating = calculateElo(loser.rankscore, winner.rankscore, 0); // Corretto
 
-            await pool.query('UPDATE players SET "rankScore" = $1 WHERE username = $2', [newWinnerRating, winnerUsername]);
-            await pool.query('UPDATE players SET "rankScore" = $1 WHERE username = $2', [newLoserRating, loserUsername]);
-
+            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newWinnerRating, winnerUsername]); // Corretto
+            await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newLoserRating, loserUsername]); // Corretto
+            
             const winnerSocketId = Object.keys(room.players).find(id => room.players[id].username === winnerUsername);
             const loserSocketId = Object.keys(room.players).find(id => room.players[id].username === loserUsername);
 
@@ -225,21 +223,22 @@ io.on('connection', (socket) => {
             console.error("Errore gameOver:", err);
         }
     });
-
+    
     socket.on('getLeaderboard', async ({ username }) => {
         try {
-            const top20Query = 'SELECT username, "rankScore", RANK() OVER (ORDER BY "rankScore" DESC) as rank FROM players ORDER BY "rankScore" DESC LIMIT 20';
+            const top20Query = 'SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players ORDER BY rankscore DESC LIMIT 20'; // Corretto
             const topRes = await pool.query(top20Query);
             const topRows = topRes.rows;
 
             const isUserInTop20 = topRows.some(p => p.username === username);
-            let finalData = topRows.map(p => ({...p, isCurrentUser: p.username === username}));
+            let finalData = topRows.map(p => ({...p, rankScore: p.rankscore, isCurrentUser: p.username === username})); // Corretto
 
             if (!isUserInTop20) {
-                const userRankQuery = 'WITH Ranks AS (SELECT username, "rankScore", RANK() OVER (ORDER BY "rankScore" DESC) as rank FROM players) SELECT * FROM Ranks WHERE username = $1';
+                const userRankQuery = 'WITH Ranks AS (SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players) SELECT * FROM Ranks WHERE username = $1'; // Corretto
                 const userRes = await pool.query(userRankQuery, [username]);
                 if (userRes.rows.length > 0) {
-                    finalData.push({...userRes.rows[0], isCurrentUser: true});
+                    const userRow = userRes.rows[0];
+                    finalData.push({...userRow, rankScore: userRow.rankscore, isCurrentUser: true}); // Corretto
                 }
             }
             socket.emit('leaderboardData', finalData);
@@ -255,29 +254,28 @@ io.on('connection', (socket) => {
         const opponentId = Object.keys(room.players).find(id => id !== socket.id);
         if (opponentId && room.rematchReady[opponentId]) startNewRound(roomId, room);
     });
-
+    
     const handleMatchAbandonment = async (roomId, abandoningSocketId) => {
         const room = gameRooms[roomId];
         if (!room) return;
 
         const opponentSocketId = Object.keys(room.players).find(id => id !== abandoningSocketId);
-
+        
         if (!room.isFinished && opponentSocketId) {
             const abandoningPlayer = room.players[abandoningSocketId];
             const winningPlayer = room.players[opponentSocketId];
             console.log(`${abandoningPlayer.username} ha abbandonato. ${winningPlayer.username} vince.`);
-            // Simula un "gameOver" per aggiornare i punteggi
             await socket.emit('gameOver', {
                 winnerUsername: winningPlayer.username,
                 loserUsername: abandoningPlayer.username,
                 roomId
             });
         }
-
+        
         if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
             io.to(opponentSocketId).emit(room.isFinished ? 'opponentLeftRematch' : 'opponentDisconnected');
         }
-
+        
         delete gameRooms[roomId];
         console.log(`Stanza ${roomId} eliminata.`);
     }
@@ -309,7 +307,7 @@ io.on('connection', (socket) => {
         matchmakingQueue = matchmakingQueue.filter(p => p.socket.id !== socket.id);
         const privateRoomCode = Object.keys(privateRooms).find(c => privateRooms[c].creatorSocket.id === socket.id);
         if (privateRoomCode) delete privateRooms[privateRoomCode];
-
+        
         const roomId = Object.keys(gameRooms).find(r => gameRooms[r].players[socket.id]);
         if (roomId) handleMatchAbandonment(roomId, socket.id);
     });
