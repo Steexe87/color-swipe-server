@@ -46,7 +46,6 @@ function getRoundDuration(score1, score2) {
     return 20;
 }
 
-// *** INIZIO BLOCCO NUOVO/MODIFICATO: Funzione centralizzata per i risultati ***
 async function processGameResult(winnerUsername, loserUsername, roomId) {
     const room = gameRooms[roomId];
     if (!room || room.isFinished) return;
@@ -79,11 +78,17 @@ async function processGameResult(winnerUsername, loserUsername, roomId) {
         console.error("Errore durante l'aggiornamento dei punteggi (processGameResult):", err);
     }
 }
-// *** FINE BLOCCO NUOVO/MODIFICATO ***
 
 
 function startNewRound(roomId, room) {
     console.log(`Avvio nuovo round per la stanza ${roomId}`);
+    // *** BLOCCO MODIFICATO: Cambia lo stato della partita all'avvio del primo round ***
+    if (room.state === 'PRE_GAME') {
+        room.state = 'IN_PROGRESS';
+        console.log(`Partita ${roomId} ufficialmente iniziata. Stato: IN_PROGRESS.`);
+    }
+    // *** FINE BLOCCO MODIFICATO ***
+    
     room.rematchReady = {};
     room.isFinished = false;
     const playerSocketIds = Object.keys(room.players);
@@ -113,7 +118,10 @@ function startGameForPair(socket1, data1, socket2, data2) {
             [socket2.id]: { ...data2, isReady: false }
         },
         rematchReady: {},
-        isFinished: false
+        isFinished: false,
+        // *** BLOCCO NUOVO: Aggiunta dello stato iniziale della partita ***
+        state: 'PRE_GAME' // La partita non è ancora ufficialmente iniziata
+        // *** FINE BLOCCO NUOVO ***
     };
     io.to(roomId).emit('gameReady', { roomId, players: Object.values(gameRooms[roomId].players) });
 }
@@ -236,11 +244,9 @@ io.on('connection', (socket) => {
         if (code) delete privateRooms[code];
     });
 
-    // *** INIZIO BLOCCO MODIFICATO: Ora chiama la nuova funzione ***
     socket.on('gameOver', ({ winnerUsername, loserUsername, roomId }) => {
         processGameResult(winnerUsername, loserUsername, roomId);
     });
-    // *** FINE BLOCCO MODIFICATO ***
     
     socket.on('getLeaderboard', async ({ username }) => {
         try {
@@ -273,30 +279,38 @@ io.on('connection', (socket) => {
         if (opponentId && room.rematchReady[opponentId]) startNewRound(roomId, room);
     });
     
+    // *** BLOCCO MODIFICATO: Logica di abbandono aggiornata ***
     const handleMatchAbandonment = async (roomId, abandoningSocketId) => {
         const room = gameRooms[roomId];
         if (!room) return;
 
         const opponentSocketId = Object.keys(room.players).find(id => id !== abandoningSocketId);
         
-        if (opponentSocketId) {
-            // *** INIZIO BLOCCO MODIFICATO: Ora chiama la nuova funzione correttamente ***
-            if (!room.isFinished) {
+        // Controlla se la partita è nello stato 'PRE_GAME'
+        if (room.state === 'PRE_GAME') {
+            console.log(`Abbandono in ${roomId} prima dell'inizio. Partita annullata, nessuna penalità.`);
+            if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
+                // Invia un evento specifico per l'abbandono pre-partita
+                io.to(opponentSocketId).emit('opponentDisconnected'); 
+            }
+        } else {
+            // Se la partita era iniziata, applica il risultato come forfeit
+            if (opponentSocketId && !room.isFinished) {
                 const abandoningPlayer = room.players[abandoningSocketId];
                 const winningPlayer = room.players[opponentSocketId];
                 console.log(`${abandoningPlayer.username} ha abbandonato. ${winningPlayer.username} vince.`);
                 await processGameResult(winningPlayer.username, abandoningPlayer.username, roomId);
-            }
-            // *** FINE BLOCCO MODIFICATO ***
-            
-            if (io.sockets.sockets.has(opponentSocketId)) {
-                io.to(opponentSocketId).emit(room.isFinished ? 'opponentLeftRematch' : 'opponentDisconnected');
+                
+                if (io.sockets.sockets.has(opponentSocketId)) {
+                    io.to(opponentSocketId).emit(room.isFinished ? 'opponentLeftRematch' : 'opponentDisconnected');
+                }
             }
         }
         
         delete gameRooms[roomId];
         console.log(`Stanza ${roomId} eliminata.`);
     }
+    // *** FINE BLOCCO MODIFICATO ***
 
     socket.on('leavePostGameLobby', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
     socket.on('leaveGame', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
