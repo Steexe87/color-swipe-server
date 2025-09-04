@@ -8,7 +8,7 @@ const bcrypt = require('bcrypt');
 
 const app = express();
 app.get('/', (req, res) => {
-  res.send('Il server di Color Swipe Duel è attivo!');
+  res.send('Color Swipe Duel server is running!');
 });
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
@@ -16,15 +16,18 @@ const PORT = process.env.PORT || 3000;
 
 const SALT_ROUNDS = 10;
 
-// --- Setup del Database PostgreSQL ---
+// --- PostgreSQL Database Setup ---
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
 });
 
-console.log('✅ Connesso al database PostgreSQL.');
+console.log('✅ Connected to PostgreSQL database.');
 
-// --- Logica di Gioco e Matchmaking ---
-let matchmakingQueue = [];
+// --- Game Logic and Matchmaking ---
+let matchmakingQueues = {
+    ranked: [],
+    casual: []
+};
 const K_FACTOR = 32;
 const gameRooms = {};
 const privateRooms = {};
@@ -48,13 +51,19 @@ function getRoundDuration(score1, score2) {
 
 async function processGameResult(winnerUsername, loserUsername, roomId) {
     const room = gameRooms[roomId];
-    if (!room || room.isFinished) return;
+    // --- MODIFICATION: Only process scores for ranked games ---
+    if (!room || room.isFinished || room.gameMode !== 'ranked') {
+        if (room && room.gameMode === 'casual') {
+            console.log(`Casual match ${roomId} finished. No score change.`);
+        }
+        return;
+    }
     room.isFinished = true;
 
     try {
         const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]);
         if (playersRes.rows.length < 2) {
-            console.log("Uno o entrambi i giocatori non trovati nel DB per l'aggiornamento del punteggio.");
+            console.log("One or both players not found in DB for score update.");
             return;
         }
 
@@ -73,21 +82,19 @@ async function processGameResult(winnerUsername, loserUsername, roomId) {
         if (winnerSocketId) io.to(winnerSocketId).emit('updateRankScore', { newRankScore: newWinnerRating });
         if (loserSocketId) io.to(loserSocketId).emit('updateRankScore', { newRankScore: newLoserRating });
 
-        console.log(`Punteggi aggiornati: ${winnerUsername} ${newWinnerRating}, ${loserUsername} ${newLoserRating}`);
+        console.log(`Scores updated: ${winnerUsername} ${newWinnerRating}, ${loserUsername} ${newLoserRating}`);
     } catch (err) {
-        console.error("Errore durante l'aggiornamento dei punteggi (processGameResult):", err);
+        console.error("Error updating scores (processGameResult):", err);
     }
 }
 
 
 function startNewRound(roomId, room) {
-    console.log(`Avvio nuovo round per la stanza ${roomId}`);
-    // *** BLOCCO MODIFICATO: Cambia lo stato della partita all'avvio del primo round ***
+    console.log(`Starting new round for room ${roomId}`);
     if (room.state === 'PRE_GAME') {
         room.state = 'IN_PROGRESS';
-        console.log(`Partita ${roomId} ufficialmente iniziata. Stato: IN_PROGRESS.`);
+        console.log(`Game ${roomId} officially started. State: IN_PROGRESS.`);
     }
-    // *** FINE BLOCCO MODIFICATO ***
     
     room.rematchReady = {};
     room.isFinished = false;
@@ -108,7 +115,7 @@ function startNewRound(roomId, room) {
     io.to(roomId).emit('gameEvent', { event: 'roundStartData', payload: roundData });
 }
 
-function startGameForPair(socket1, data1, socket2, data2) {
+function startGameForPair(socket1, data1, socket2, data2, gameMode) {
     const roomId = `room-${socket1.id}-${socket2.id}`;
     socket1.join(roomId);
     socket2.join(roomId);
@@ -119,23 +126,28 @@ function startGameForPair(socket1, data1, socket2, data2) {
         },
         rematchReady: {},
         isFinished: false,
-        // *** BLOCCO NUOVO: Aggiunta dello stato iniziale della partita ***
-        state: 'PRE_GAME' // La partita non è ancora ufficialmente iniziata
-        // *** FINE BLOCCO NUOVO ***
+        state: 'PRE_GAME',
+        // --- NEW: Store game mode in the room ---
+        gameMode: gameMode 
     };
     io.to(roomId).emit('gameReady', { roomId, players: Object.values(gameRooms[roomId].players) });
 }
 
-function findMatch() {
-    for (let i = 0; i < matchmakingQueue.length; i++) {
-        for (let j = i + 1; j < matchmakingQueue.length; j++) {
-            const player1 = matchmakingQueue[i];
-            const player2 = matchmakingQueue[j];
-            if (Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200) {
-                console.log(`🤝 Match casuale trovato tra ${player1.data.username} e ${player2.data.username}`);
+function findMatch(gameMode) {
+    const queue = matchmakingQueues[gameMode];
+    for (let i = 0; i < queue.length; i++) {
+        for (let j = i + 1; j < queue.length; j++) {
+            const player1 = queue[i];
+            const player2 = queue[j];
+            
+            // For ranked, use ELO; for casual, match anyone
+            const canMatch = gameMode === 'casual' || Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200;
+
+            if (canMatch) {
+                console.log(`🤝 ${gameMode} match found between ${player1.data.username} and ${player2.data.username}`);
                 const matchedPlayers = [player1, player2];
-                matchmakingQueue = matchmakingQueue.filter(p => !matchedPlayers.includes(p));
-                startGameForPair(player1.socket, player1.data, player2.socket, player2.data);
+                matchmakingQueues[gameMode] = queue.filter(p => !matchedPlayers.includes(p));
+                startGameForPair(player1.socket, player1.data, player2.socket, player2.data, gameMode);
                 return;
             }
         }
@@ -152,9 +164,9 @@ function generateRoomCode() {
     return code;
 }
 
-// --- Gestione Connessioni Socket ---
+// --- Socket Connection Handling ---
 io.on('connection', (socket) => {
-    console.log(`✅ Un utente si è connesso: ${socket.id}`);
+    console.log(`✅ A user connected: ${socket.id}`);
 
     socket.on('rejoinWithUsername', async ({ username }) => {
         if (!username) return;
@@ -163,79 +175,84 @@ io.on('connection', (socket) => {
             const res = await pool.query('SELECT username, rankscore FROM players WHERE username = $1', [username]);
             if (res.rows.length === 0) return socket.emit('forceLogin');
             const row = res.rows[0];
-            console.log(`Utente ${username} ri-autenticato.`);
+            console.log(`User ${username} re-authenticated.`);
             socket.emit('loginSuccess', { username: row.username, rankScore: row.rankscore });
         } catch (err) {
-            console.error("Errore rejoin:", err);
+            console.error("Rejoin error:", err);
             socket.emit('forceLogin');
         }
     });
 
     socket.on('register', async ({ username, password }) => {
-        if (!username || username.length < 3 || !password || password.length < 4) {
-            return socket.emit('registerError', 'Username o password non validi.');
+        // --- MODIFICATION: Added username length check ---
+        if (!username || username.length < 3 || username.length > 10 || !password || password.length < 4) {
+            return socket.emit('registerError', 'Invalid username or password.');
         }
         try {
             const existingUser = await pool.query('SELECT username FROM players WHERE username = $1', [username]);
-            if (existingUser.rows.length > 0) return socket.emit('registerError', 'Username già in uso.');
+            if (existingUser.rows.length > 0) return socket.emit('registerError', 'Username already taken.');
             
             const hash = await bcrypt.hash(password, SALT_ROUNDS);
             const startScore = 1000;
             await pool.query('INSERT INTO players(username, password, rankscore) VALUES($1, $2, $3)', [username, hash, startScore]);
             
-            console.log(`Nuovo giocatore registrato: ${username}`);
+            console.log(`New player registered: ${username}`);
             socket.emit('registerSuccess', { username, rankScore: startScore });
         } catch (err) {
-            console.error("Errore registrazione:", err);
-            socket.emit('registerError', 'Errore del server.');
+            console.error("Registration error:", err);
+            socket.emit('registerError', 'Server error.');
         }
     });
     
     socket.on('login', async ({ username, password }) => {
-        if (!username || !password) return socket.emit('loginError', 'Username o password mancanti.');
+        if (!username || !password) return socket.emit('loginError', 'Missing username or password.');
         socket.username = username;
         try {
             const res = await pool.query('SELECT * FROM players WHERE username = $1', [username]);
-            if (res.rows.length === 0) return socket.emit('loginError', 'Utente non trovato.');
+            if (res.rows.length === 0) return socket.emit('loginError', 'User not found.');
             
             const user = res.rows[0];
             const match = await bcrypt.compare(password, user.password);
 
             if (match) {
-                console.log(`Utente ${username} autenticato.`);
+                console.log(`User ${username} authenticated.`);
                 socket.emit('loginSuccess', { username: user.username, rankScore: user.rankscore });
             } else {
-                console.log(`Tentativo di login fallito per ${username}.`);
-                socket.emit('loginError', 'Password errata.');
+                console.log(`Failed login attempt for ${username}.`);
+                socket.emit('loginError', 'Incorrect password.');
             }
         } catch (err) {
-            console.error("Errore login:", err);
-            socket.emit('loginError', 'Errore del server.');
+            console.error("Login error:", err);
+            socket.emit('loginError', 'Server error.');
         }
     });
 
-    socket.on('findMatch', (playerData) => {
-        matchmakingQueue.push({ socket, data: playerData });
-        findMatch();
+    // --- MODIFICATION: Handle matchmaking for different modes ---
+    socket.on('findMatch', ({ playerData, gameMode }) => {
+        if (!matchmakingQueues[gameMode]) return;
+        matchmakingQueues[gameMode].push({ socket, data: playerData });
+        findMatch(gameMode);
     });
 
     socket.on('cancelFindMatch', () => {
-        matchmakingQueue = matchmakingQueue.filter(p => p.socket.id !== socket.id);
+        matchmakingQueues.ranked = matchmakingQueues.ranked.filter(p => p.socket.id !== socket.id);
+        matchmakingQueues.casual = matchmakingQueues.casual.filter(p => p.socket.id !== socket.id);
     });
-
-    socket.on('createPrivateRoom', (playerData) => {
+    
+    // --- MODIFICATION: Create private rooms with a specific game mode ---
+    socket.on('createPrivateRoom', ({ playerData, gameMode }) => {
         const code = generateRoomCode();
-        privateRooms[code] = { creatorSocket: socket, creatorData: playerData };
-        console.log(`Stanza privata creata da ${playerData.username} con codice ${code}`);
+        privateRooms[code] = { creatorSocket: socket, creatorData: playerData, gameMode: gameMode };
+        console.log(`${playerData.username} created a private ${gameMode} room with code ${code}`);
         socket.emit('privateRoomCreated', { code });
     });
 
     socket.on('joinPrivateRoom', ({ code, playerData }) => {
         const roomToJoin = privateRooms[code];
-        if (!roomToJoin) return socket.emit('joinRoomError', 'Stanza non trovata o scaduta.');
-        console.log(`${playerData.username} si unisce alla stanza ${code}`);
-        const { creatorSocket, creatorData } = roomToJoin;
-        startGameForPair(creatorSocket, creatorData, socket, playerData);
+        if (!roomToJoin) return socket.emit('joinRoomError', 'Room not found or expired.');
+        console.log(`${playerData.username} is joining room ${code}`);
+        const { creatorSocket, creatorData, gameMode } = roomToJoin;
+        startGameForPair(creatorSocket, creatorData, socket, playerData, gameMode);
         delete privateRooms[code];
     });
 
@@ -257,7 +274,7 @@ io.on('connection', (socket) => {
             const isUserInTop20 = topRows.some(p => p.username === username);
             let finalData = topRows.map(p => ({...p, rankScore: p.rankscore, isCurrentUser: p.username === username}));
 
-            if (!isUserInTop20) {
+            if (!isUserInTop20 && username) {
                 const userRankQuery = 'WITH Ranks AS (SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players) SELECT * FROM Ranks WHERE username = $1';
                 const userRes = await pool.query(userRankQuery, [username]);
                 if (userRes.rows.length > 0) {
@@ -267,7 +284,7 @@ io.on('connection', (socket) => {
             }
             socket.emit('leaderboardData', finalData);
         } catch (err) {
-            console.error("Errore getLeaderboard:", err);
+            console.error("getLeaderboard error:", err);
         }
     });
 
@@ -279,26 +296,22 @@ io.on('connection', (socket) => {
         if (opponentId && room.rematchReady[opponentId]) startNewRound(roomId, room);
     });
     
-    // *** BLOCCO MODIFICATO: Logica di abbandono aggiornata ***
     const handleMatchAbandonment = async (roomId, abandoningSocketId) => {
         const room = gameRooms[roomId];
         if (!room) return;
 
         const opponentSocketId = Object.keys(room.players).find(id => id !== abandoningSocketId);
         
-        // Controlla se la partita è nello stato 'PRE_GAME'
         if (room.state === 'PRE_GAME') {
-            console.log(`Abbandono in ${roomId} prima dell'inizio. Partita annullata, nessuna penalità.`);
+            console.log(`Abandonment in ${roomId} before start. Game cancelled, no penalty.`);
             if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
-                // Invia un evento specifico per l'abbandono pre-partita
                 io.to(opponentSocketId).emit('opponentDisconnected'); 
             }
         } else {
-            // Se la partita era iniziata, applica il risultato come forfeit
             if (opponentSocketId && !room.isFinished) {
                 const abandoningPlayer = room.players[abandoningSocketId];
                 const winningPlayer = room.players[opponentSocketId];
-                console.log(`${abandoningPlayer.username} ha abbandonato. ${winningPlayer.username} vince.`);
+                console.log(`${abandoningPlayer.username} left. ${winningPlayer.username} wins by forfeit.`);
                 await processGameResult(winningPlayer.username, abandoningPlayer.username, roomId);
                 
                 if (io.sockets.sockets.has(opponentSocketId)) {
@@ -308,9 +321,8 @@ io.on('connection', (socket) => {
         }
         
         delete gameRooms[roomId];
-        console.log(`Stanza ${roomId} eliminata.`);
+        console.log(`Room ${roomId} deleted.`);
     }
-    // *** FINE BLOCCO MODIFICATO ***
 
     socket.on('leavePostGameLobby', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
     socket.on('leaveGame', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
@@ -321,7 +333,9 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         if (event === 'playerReady') {
-            room.players[socket.id].isReady = true;
+            if (room.players[socket.id]) {
+                room.players[socket.id].isReady = true;
+            }
             const allReady = Object.values(room.players).every(p => p.isReady);
             if (allReady) {
                 Object.values(room.players).forEach(p => p.isReady = false);
@@ -335,16 +349,17 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log(`❌ Utente disconnesso: ${socket.id}`);
-        matchmakingQueue = matchmakingQueue.filter(p => p.socket.id !== socket.id);
+        console.log(`❌ User disconnected: ${socket.id}`);
+        matchmakingQueues.ranked = matchmakingQueues.ranked.filter(p => p.socket.id !== socket.id);
+        matchmakingQueues.casual = matchmakingQueues.casual.filter(p => p.socket.id !== socket.id);
         const privateRoomCode = Object.keys(privateRooms).find(c => privateRooms[c].creatorSocket.id === socket.id);
         if (privateRoomCode) delete privateRooms[privateRoomCode];
         
-        const roomId = Object.keys(gameRooms).find(r => gameRooms[r].players[socket.id]);
+        const roomId = Object.keys(gameRooms).find(r => gameRooms[r] && gameRooms[r].players[socket.id]);
         if (roomId) handleMatchAbandonment(roomId, socket.id);
     });
 });
 
 server.listen(PORT, () => {
-  console.log(`🚀 Server in ascolto sulla porta ${PORT}`);
+  console.log(`🚀 Server listening on port ${PORT}`);
 });
