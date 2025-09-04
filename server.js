@@ -111,7 +111,6 @@ function startNewRound(roomId, room) {
         players: Object.values(room.players),
         duration: roundDuration
     };
-    // BUG FIX: Added roomId to the emitted event data
     io.to(roomId).emit('gameEvent', { roomId: roomId, event: 'roundStartData', payload: roundData });
 }
 
@@ -119,7 +118,7 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
     const roomId = `room-${socket1.id}-${socket2.id}`;
     socket1.join(roomId);
     socket2.join(roomId);
-    gameRooms[roomId] = {
+    const room = {
         players: {
             [socket1.id]: { ...data1, isReady: false },
             [socket2.id]: { ...data2, isReady: false }
@@ -129,7 +128,11 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
         state: 'PRE_GAME',
         gameMode: gameMode 
     };
-    io.to(roomId).emit('gameReady', { roomId, players: Object.values(gameRooms[roomId].players) });
+    gameRooms[roomId] = room;
+
+    // *** MODIFICATION: Instead of emitting 'gameReady', we now directly start the first round. ***
+    console.log(`Match found. Immediately starting game for room ${roomId}`);
+    startNewRound(roomId, room);
 }
 
 function findMatch(gameMode) {
@@ -330,7 +333,6 @@ io.on('connection', (socket) => {
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
             } else {
-                // Player not in room, something is wrong.
                 return; 
             }
 
@@ -340,12 +342,9 @@ io.on('connection', (socket) => {
                 Object.values(room.players).forEach(p => p.isReady = false);
                 startNewRound(roomId, room);
             } else {
-                // BUG FIX: Added roomId to the emitted event data
                 socket.to(roomId).emit('gameEvent', { roomId: roomId, event: 'playerReady' });
             }
         } else {
-            // This case handles events sent from one client to the other, like color changes.
-            // The 'data' object from the client already includes the roomId, so this is correct.
             socket.to(roomId).emit('gameEvent', data);
         }
     });
