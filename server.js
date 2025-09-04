@@ -111,7 +111,8 @@ function startNewRound(roomId, room) {
         players: Object.values(room.players),
         duration: roundDuration
     };
-    io.to(roomId).emit('gameEvent', { event: 'roundStartData', payload: roundData });
+    // BUG FIX: Added roomId to the emitted event data
+    io.to(roomId).emit('gameEvent', { roomId: roomId, event: 'roundStartData', payload: roundData });
 }
 
 function startGameForPair(socket1, data1, socket2, data2, gameMode) {
@@ -326,36 +327,25 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         if (event === 'playerReady') {
-            // --- BUG FIX & DIAGNOSTIC LOGS ---
-            console.log(`\n--- [PLAYER READY EVENT] ---`);
-            console.log(`[INFO] Received from socket: ${socket.id} for room: ${roomId}`);
-            console.log(`[STATE BEFORE] room.players:`, JSON.stringify(room.players, null, 2));
-
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
-                console.log(`[ACTION] Set isReady=true for socket: ${socket.id}`);
             } else {
-                console.log(`[WARNING] Socket ${socket.id} not found in room ${roomId}. Cannot set ready state.`);
-                console.log(`--- [END PLAYER READY EVENT] ---\n`);
+                // Player not in room, something is wrong.
                 return; 
             }
 
-            console.log(`[STATE AFTER] room.players:`, JSON.stringify(room.players, null, 2));
-
             const allReady = Object.values(room.players).every(p => p.isReady);
-            console.log(`[CHECK] Are all players ready? -> ${allReady}`);
 
             if (allReady) {
-                console.log(`[RESULT] All ready. Starting new round for room ${roomId}.`);
                 Object.values(room.players).forEach(p => p.isReady = false);
                 startNewRound(roomId, room);
             } else {
-                console.log(`[RESULT] Not all ready. Notifying opponent in room ${roomId}.`);
-                socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
+                // BUG FIX: Added roomId to the emitted event data
+                socket.to(roomId).emit('gameEvent', { roomId: roomId, event: 'playerReady' });
             }
-            console.log(`--- [END PLAYER READY EVENT] ---\n`);
-            // --- END OF FIX ---
         } else {
+            // This case handles events sent from one client to the other, like color changes.
+            // The 'data' object from the client already includes the roomId, so this is correct.
             socket.to(roomId).emit('gameEvent', data);
         }
     });
