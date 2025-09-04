@@ -51,7 +51,6 @@ function getRoundDuration(score1, score2) {
 
 async function processGameResult(winnerUsername, loserUsername, roomId) {
     const room = gameRooms[roomId];
-    // --- MODIFICATION: Only process scores for ranked games ---
     if (!room || room.isFinished || room.gameMode !== 'ranked') {
         if (room && room.gameMode === 'casual') {
             console.log(`Casual match ${roomId} finished. No score change.`);
@@ -127,7 +126,6 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
         rematchReady: {},
         isFinished: false,
         state: 'PRE_GAME',
-        // --- NEW: Store game mode in the room ---
         gameMode: gameMode 
     };
     io.to(roomId).emit('gameReady', { roomId, players: Object.values(gameRooms[roomId].players) });
@@ -140,7 +138,6 @@ function findMatch(gameMode) {
             const player1 = queue[i];
             const player2 = queue[j];
             
-            // For ranked, use ELO; for casual, match anyone
             const canMatch = gameMode === 'casual' || Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200;
 
             if (canMatch) {
@@ -164,7 +161,6 @@ function generateRoomCode() {
     return code;
 }
 
-// --- Socket Connection Handling ---
 io.on('connection', (socket) => {
     console.log(`✅ A user connected: ${socket.id}`);
 
@@ -184,7 +180,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('register', async ({ username, password }) => {
-        // --- MODIFICATION: Added username length check ---
         if (!username || username.length < 3 || username.length > 10 || !password || password.length < 4) {
             return socket.emit('registerError', 'Invalid username or password.');
         }
@@ -227,7 +222,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- MODIFICATION: Handle matchmaking for different modes ---
     socket.on('findMatch', ({ playerData, gameMode }) => {
         if (!matchmakingQueues[gameMode]) return;
         matchmakingQueues[gameMode].push({ socket, data: playerData });
@@ -239,7 +233,6 @@ io.on('connection', (socket) => {
         matchmakingQueues.casual = matchmakingQueues.casual.filter(p => p.socket.id !== socket.id);
     });
     
-    // --- MODIFICATION: Create private rooms with a specific game mode ---
     socket.on('createPrivateRoom', ({ playerData, gameMode }) => {
         const code = generateRoomCode();
         privateRooms[code] = { creatorSocket: socket, creatorData: playerData, gameMode: gameMode };
@@ -333,12 +326,18 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         if (event === 'playerReady') {
-            if (room.players[socket.id]) {
-                room.players[socket.id].isReady = true;
+            // BUG FIX: Removed the failing 'if' condition. Directly set the player's ready state.
+            try {
+                 room.players[socket.id].isReady = true;
+            } catch (e) {
+                console.error(`Error setting ready state for socket ${socket.id} in room ${roomId}. Player might not exist in room object.`);
+                return;
             }
+            
             const allReady = Object.values(room.players).every(p => p.isReady);
+
             if (allReady) {
-                Object.values(room.players).forEach(p => p.isReady = false);
+                Object.values(room.players).forEach(p => p.isReady = false); // Reset for next round
                 startNewRound(roomId, room);
             } else {
                 socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
