@@ -326,22 +326,35 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         if (event === 'playerReady') {
-            // BUG FIX: Removed the failing 'if' condition. Directly set the player's ready state.
-            try {
-                 room.players[socket.id].isReady = true;
-            } catch (e) {
-                console.error(`Error setting ready state for socket ${socket.id} in room ${roomId}. Player might not exist in room object.`);
-                return;
+            // --- BUG FIX & DIAGNOSTIC LOGS ---
+            console.log(`\n--- [PLAYER READY EVENT] ---`);
+            console.log(`[INFO] Received from socket: ${socket.id} for room: ${roomId}`);
+            console.log(`[STATE BEFORE] room.players:`, JSON.stringify(room.players, null, 2));
+
+            if (room.players[socket.id]) {
+                room.players[socket.id].isReady = true;
+                console.log(`[ACTION] Set isReady=true for socket: ${socket.id}`);
+            } else {
+                console.log(`[WARNING] Socket ${socket.id} not found in room ${roomId}. Cannot set ready state.`);
+                console.log(`--- [END PLAYER READY EVENT] ---\n`);
+                return; 
             }
-            
+
+            console.log(`[STATE AFTER] room.players:`, JSON.stringify(room.players, null, 2));
+
             const allReady = Object.values(room.players).every(p => p.isReady);
+            console.log(`[CHECK] Are all players ready? -> ${allReady}`);
 
             if (allReady) {
-                Object.values(room.players).forEach(p => p.isReady = false); // Reset for next round
+                console.log(`[RESULT] All ready. Starting new round for room ${roomId}.`);
+                Object.values(room.players).forEach(p => p.isReady = false);
                 startNewRound(roomId, room);
             } else {
+                console.log(`[RESULT] Not all ready. Notifying opponent in room ${roomId}.`);
                 socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
             }
+            console.log(`--- [END PLAYER READY EVENT] ---\n`);
+            // --- END OF FIX ---
         } else {
             socket.to(roomId).emit('gameEvent', data);
         }
