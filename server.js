@@ -135,24 +135,35 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
 
 function findMatch(gameMode) {
     const queue = matchmakingQueues[gameMode];
+    // Se ci sono meno di 2 giocatori, non si può fare un match
+    if (queue.length < 2) return;
+
+    // Cerca una coppia che possa giocare
     for (let i = 0; i < queue.length; i++) {
         for (let j = i + 1; j < queue.length; j++) {
             const player1 = queue[i];
             const player2 = queue[j];
-            
-            // For ranked, use ELO; for casual, match anyone
+
+            // La condizione di match: sempre vera in casual, basata su Elo in ranked
             const canMatch = gameMode === 'casual' || Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200;
 
             if (canMatch) {
                 console.log(`🤝 ${gameMode} match found between ${player1.data.username} and ${player2.data.username}`);
-                const matchedPlayers = [player1, player2];
-                matchmakingQueues[gameMode] = queue.filter(p => !matchedPlayers.includes(p));
+                
+                // Rimuovi i giocatori trovati dalla coda
+                // splice modifica l'array originale, quindi dobbiamo partire dall'indice più alto per non saltare elementi
+                queue.splice(j, 1);
+                queue.splice(i, 1);
+
+                // Avvia la partita per loro
                 startGameForPair(player1.socket, player1.data, player2.socket, player2.data, gameMode);
-                return;
+                
+                // Abbiamo trovato un match, possiamo interrompere la ricerca
+                return; 
             }
         }
     }
-}
+}}
 
 function generateRoomCode() {
     let code;
