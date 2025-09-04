@@ -51,6 +51,7 @@ function getRoundDuration(score1, score2) {
 
 async function processGameResult(winnerUsername, loserUsername, roomId) {
     const room = gameRooms[roomId];
+    // --- MODIFICATION: Only process scores for ranked games ---
     if (!room || room.isFinished || room.gameMode !== 'ranked') {
         if (room && room.gameMode === 'casual') {
             console.log(`Casual match ${roomId} finished. No score change.`);
@@ -111,14 +112,14 @@ function startNewRound(roomId, room) {
         players: Object.values(room.players),
         duration: roundDuration
     };
-    io.to(roomId).emit('gameEvent', { roomId: roomId, event: 'roundStartData', payload: roundData });
+    io.to(roomId).emit('gameEvent', { event: 'roundStartData', payload: roundData });
 }
 
 function startGameForPair(socket1, data1, socket2, data2, gameMode) {
     const roomId = `room-${socket1.id}-${socket2.id}`;
     socket1.join(roomId);
     socket2.join(roomId);
-    const room = {
+    gameRooms[roomId] = {
         players: {
             [socket1.id]: { ...data1, isReady: false },
             [socket2.id]: { ...data2, isReady: false }
@@ -126,13 +127,10 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
         rematchReady: {},
         isFinished: false,
         state: 'PRE_GAME',
+        // --- NEW: Store game mode in the room ---
         gameMode: gameMode 
     };
-    gameRooms[roomId] = room;
-
-    // *** MODIFICATION: Instead of emitting 'gameReady', we now directly start the first round. ***
-    console.log(`Match found. Immediately starting game for room ${roomId}`);
-    startNewRound(roomId, room);
+    io.to(roomId).emit('gameReady', { roomId, players: Object.values(gameRooms[roomId].players) });
 }
 
 function findMatch(gameMode) {
@@ -142,6 +140,7 @@ function findMatch(gameMode) {
             const player1 = queue[i];
             const player2 = queue[j];
             
+            // For ranked, use ELO; for casual, match anyone
             const canMatch = gameMode === 'casual' || Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200;
 
             if (canMatch) {
@@ -165,6 +164,7 @@ function generateRoomCode() {
     return code;
 }
 
+// --- Socket Connection Handling ---
 io.on('connection', (socket) => {
     console.log(`✅ A user connected: ${socket.id}`);
 
@@ -184,6 +184,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('register', async ({ username, password }) => {
+        // --- MODIFICATION: Added username length check ---
         if (!username || username.length < 3 || username.length > 10 || !password || password.length < 4) {
             return socket.emit('registerError', 'Invalid username or password.');
         }
@@ -226,6 +227,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // --- MODIFICATION: Handle matchmaking for different modes ---
     socket.on('findMatch', ({ playerData, gameMode }) => {
         if (!matchmakingQueues[gameMode]) return;
         matchmakingQueues[gameMode].push({ socket, data: playerData });
@@ -237,6 +239,7 @@ io.on('connection', (socket) => {
         matchmakingQueues.casual = matchmakingQueues.casual.filter(p => p.socket.id !== socket.id);
     });
     
+    // --- MODIFICATION: Create private rooms with a specific game mode ---
     socket.on('createPrivateRoom', ({ playerData, gameMode }) => {
         const code = generateRoomCode();
         privateRooms[code] = { creatorSocket: socket, creatorData: playerData, gameMode: gameMode };
@@ -332,17 +335,13 @@ io.on('connection', (socket) => {
         if (event === 'playerReady') {
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
-            } else {
-                return; 
             }
-
             const allReady = Object.values(room.players).every(p => p.isReady);
-
             if (allReady) {
                 Object.values(room.players).forEach(p => p.isReady = false);
                 startNewRound(roomId, room);
             } else {
-                socket.to(roomId).emit('gameEvent', { roomId: roomId, event: 'playerReady' });
+                socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
             }
         } else {
             socket.to(roomId).emit('gameEvent', data);
