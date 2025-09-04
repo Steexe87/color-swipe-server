@@ -163,7 +163,7 @@ function findMatch(gameMode) {
             }
         }
     }
-}}
+} // <-- CORRETTO: Una sola '}' per chiudere la funzione
 
 function generateRoomCode() {
     let code;
