@@ -336,15 +336,15 @@ io.on('connection', (socket) => {
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
             }
+            // NOTIFICA SEMPRE L'AVVERSARIO (MODIFICA CHIAVE)
+            socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
+
             const allReady = Object.values(room.players).every(p => p.isReady);
             if (allReady) {
                 Object.values(room.players).forEach(p => p.isReady = false);
                 startNewRound(roomId, room);
-            } else {
-                socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
             }
-        } else {
-            socket.to(roomId).emit('gameEvent', data);
+            // 'else' rimosso
         }
     });
 
