@@ -112,7 +112,7 @@ function startNewRound(roomId, room) {
         players: Object.values(room.players),
         duration: roundDuration
     };
-    io.to(roomId).emit('gameEvent', { event: 'roundStartData', payload: roundData });
+    io.to(roomId).emit('gameEvent', { roomId, event: 'roundStartData', payload: roundData });
 }
 
 function startGameForPair(socket1, data1, socket2, data2, gameMode) {
@@ -339,25 +339,28 @@ io.on('connection', (socket) => {
     socket.on('leaveGame', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
 
     socket.on('gameEvent', (data) => {
-        const { roomId, event } = data;
-        const room = gameRooms[roomId];
-        if (!room) return;
+    const { roomId, event } = data;
+    const room = gameRooms[roomId];
+    if (!room) return;
 
-        if (event === 'playerReady') {
-            if (room.players[socket.id]) {
-                room.players[socket.id].isReady = true;
-            }
-            // NOTIFICA SEMPRE L'AVVERSARIO (MODIFICA CHIAVE)
-            socket.to(roomId).emit('gameEvent', { event: 'playerReady' });
-
-            const allReady = Object.values(room.players).every(p => p.isReady);
-            if (allReady) {
-                Object.values(room.players).forEach(p => p.isReady = false);
-                startNewRound(roomId, room);
-            }
-            // 'else' rimosso
+    if (event === 'playerReady') {
+        if (room.players[socket.id]) {
+            room.players[socket.id].isReady = true;
         }
-    });
+        // Invia la notifica di "pronto" all'avversario, includendo il roomId
+        socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
+
+        const allReady = Object.values(room.players).every(p => p.isReady);
+        if (allReady) {
+            Object.values(room.players).forEach(p => p.isReady = false);
+            startNewRound(roomId, room); // Questa funzione ora invierà il roomId corretto
+        }
+    } else {
+        // Inoltra tutti gli altri eventi di gioco (cambio colore, scelta bloccata, etc.)
+        // L'oggetto 'data' originale contiene già il roomId
+        socket.to(roomId).emit('gameEvent', data);
+    }
+});
 
     socket.on('disconnect', () => {
         console.log(`❌ User disconnected: ${socket.id}`);
