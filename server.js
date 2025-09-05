@@ -44,14 +44,16 @@ function getRandomColor() {
 
 function getRoundDuration(score1, score2) {
     const highestScore = Math.max(score1, score2);
-    if (highestScore >= 1500) return 10;
-    if (highestScore >= 1100) return 15;
-    return 20;
+    if (highestScore >= 1700) return 10; // Diamond
+    if (highestScore >= 1500) return 12; // Platinum
+    if (highestScore >= 1300) return 15; // Gold
+    if (highestScore >= 1100) return 18; // Silver
+    return 20; // Bronze
 }
+
 
 async function processGameResult(winnerUsername, loserUsername, roomId) {
     const room = gameRooms[roomId];
-    // --- MODIFICATION: Only process scores for ranked games ---
     if (!room || room.isFinished || room.gameMode !== 'ranked') {
         if (room && room.gameMode === 'casual') {
             console.log(`Casual match ${roomId} finished. No score change.`);
@@ -110,7 +112,9 @@ function startNewRound(roomId, room) {
             [playerSocketIds[1]]: getRandomColor(),
         },
         players: Object.values(room.players),
-        duration: roundDuration
+        duration: roundDuration,
+        // --- NEW: Send initial power-up state to both players ---
+        opponentPowerups: { glitch: true, snap: true } 
     };
     io.to(roomId).emit('gameEvent', { roomId, event: 'roundStartData', payload: roundData });
 }
@@ -127,7 +131,6 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
         rematchReady: {},
         isFinished: false,
         state: 'PRE_GAME',
-        // --- NEW: Store game mode in the room ---
         gameMode: gameMode 
     };
     io.to(roomId).emit('gameReady', { roomId, players: Object.values(gameRooms[roomId].players) });
@@ -135,35 +138,28 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
 
 function findMatch(gameMode) {
     const queue = matchmakingQueues[gameMode];
-    // Se ci sono meno di 2 giocatori, non si può fare un match
     if (queue.length < 2) return;
 
-    // Cerca una coppia che possa giocare
     for (let i = 0; i < queue.length; i++) {
         for (let j = i + 1; j < queue.length; j++) {
             const player1 = queue[i];
             const player2 = queue[j];
-
-            // La condizione di match: sempre vera in casual, basata su Elo in ranked
+            
             const canMatch = gameMode === 'casual' || Math.abs(player1.data.rankScore - player2.data.rankScore) <= 200;
 
             if (canMatch) {
                 console.log(`🤝 ${gameMode} match found between ${player1.data.username} and ${player2.data.username}`);
                 
-                // Rimuovi i giocatori trovati dalla coda
-                // splice modifica l'array originale, quindi dobbiamo partire dall'indice più alto per non saltare elementi
-                queue.splice(j, 1);
-                queue.splice(i, 1);
+                const matchedPlayers = [player1, player2];
+                matchmakingQueues[gameMode] = queue.filter(p => !matchedPlayers.includes(p));
 
-                // Avvia la partita per loro
                 startGameForPair(player1.socket, player1.data, player2.socket, player2.data, gameMode);
                 
-                // Abbiamo trovato un match, possiamo interrompere la ricerca
                 return; 
             }
         }
     }
-} // <-- CORRETTO: Una sola '}' per chiudere la funzione
+}
 
 function generateRoomCode() {
     let code;
@@ -195,7 +191,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('register', async ({ username, password }) => {
-        // --- MODIFICATION: Added username length check ---
         if (!username || username.length < 3 || username.length > 10 || !password || password.length < 4) {
             return socket.emit('registerError', 'Invalid username or password.');
         }
@@ -238,7 +233,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- MODIFICATION: Handle matchmaking for different modes ---
     socket.on('findMatch', ({ playerData, gameMode }) => {
         if (!matchmakingQueues[gameMode]) return;
         matchmakingQueues[gameMode].push({ socket, data: playerData });
@@ -250,7 +244,6 @@ io.on('connection', (socket) => {
         matchmakingQueues.casual = matchmakingQueues.casual.filter(p => p.socket.id !== socket.id);
     });
     
-    // --- MODIFICATION: Create private rooms with a specific game mode ---
     socket.on('createPrivateRoom', ({ playerData, gameMode }) => {
         const code = generateRoomCode();
         privateRooms[code] = { creatorSocket: socket, creatorData: playerData, gameMode: gameMode };
@@ -270,6 +263,12 @@ io.on('connection', (socket) => {
     socket.on('cancelPrivateRoom', () => {
         const code = Object.keys(privateRooms).find(c => privateRooms[c].creatorSocket.id === socket.id);
         if (code) delete privateRooms[code];
+    });
+    
+    // --- NEW: Event handler for bonus usage ---
+    socket.on('useBonus', ({ roomId, bonusType }) => {
+        // Relay the bonus usage to the other player in the room
+        socket.to(roomId).emit('opponentUsedBonus', { bonusType });
     });
 
     socket.on('gameOver', ({ winnerUsername, loserUsername, roomId }) => {
@@ -326,7 +325,7 @@ io.on('connection', (socket) => {
                 await processGameResult(winningPlayer.username, abandoningPlayer.username, roomId);
                 
                 if (io.sockets.sockets.has(opponentSocketId)) {
-                    io.to(opponentSocketId).emit(room.isFinished ? 'opponentLeftRematch' : 'opponentDisconnected');
+                    io.to(opponentSocketId).emit('opponentDisconnected');
                 }
             }
         }
@@ -335,32 +334,38 @@ io.on('connection', (socket) => {
         console.log(`Room ${roomId} deleted.`);
     }
 
-    socket.on('leavePostGameLobby', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
+    socket.on('leavePostGameLobby', ({ roomId }) => {
+        if (gameRooms[roomId]) {
+            const opponentSocketId = Object.keys(gameRooms[roomId].players).find(id => id !== socket.id);
+            if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
+                io.to(opponentSocketId).emit('opponentLeftRematch');
+            }
+            delete gameRooms[roomId];
+        }
+    });
+
     socket.on('leaveGame', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
 
     socket.on('gameEvent', (data) => {
-    const { roomId, event } = data;
-    const room = gameRooms[roomId];
-    if (!room) return;
+        const { roomId, event } = data;
+        const room = gameRooms[roomId];
+        if (!room) return;
 
-    if (event === 'playerReady') {
-        if (room.players[socket.id]) {
-            room.players[socket.id].isReady = true;
-        }
-        // Invia la notifica di "pronto" all'avversario, includendo il roomId
-        socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
+        if (event === 'playerReady') {
+            if (room.players[socket.id]) {
+                room.players[socket.id].isReady = true;
+            }
+            socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
 
-        const allReady = Object.values(room.players).every(p => p.isReady);
-        if (allReady) {
-            Object.values(room.players).forEach(p => p.isReady = false);
-            startNewRound(roomId, room); // Questa funzione ora invierà il roomId corretto
+            const allReady = Object.values(room.players).every(p => p.isReady);
+            if (allReady) {
+                Object.values(room.players).forEach(p => p.isReady = false);
+                startNewRound(roomId, room);
+            }
+        } else {
+            socket.to(roomId).emit('gameEvent', data);
         }
-    } else {
-        // Inoltra tutti gli altri eventi di gioco (cambio colore, scelta bloccata, etc.)
-        // L'oggetto 'data' originale contiene già il roomId
-        socket.to(roomId).emit('gameEvent', data);
-    }
-});
+    });
 
     socket.on('disconnect', () => {
         console.log(`❌ User disconnected: ${socket.id}`);
