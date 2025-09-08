@@ -434,21 +434,19 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         if (event === 'playerReady') {
+            console.log(`[SERVER] Player ${socket.id} is ready.`);
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
             }
-            // NON notificare l'altro giocatore. Il server gestisce lo stato.
-            // La riga seguente è stata rimossa per evitare il deadlock.
-            // socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
-
+            
             const allReady = Object.values(room.players).every(p => p.isReady);
+
             if (allReady) {
-                // Una volta che TUTTI sono pronti, il server avvia il round per tutti.
-                Object.values(room.players).forEach(p => p.isReady = false); // Resetta per il prossimo round
+                console.log(`[SERVER] All players in room ${roomId} are ready. Starting round.`);
+                Object.values(room.players).forEach(p => p.isReady = false);
                 startNewRound(roomId, room);
             }
         } else {
-            // Inoltra tutti gli altri eventi di gioco
             socket.to(roomId).emit('gameEvent', data);
         }
     });
