@@ -116,14 +116,14 @@ function startNewRound(roomId, room) {
     const player2 = room.players[playerSocketIds[1]];
     const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
     
-    // *** MODIFICATO: Colore di partenza uguale per entrambi i giocatori ***
-    const startColor = getRandomColor();
+    // --- START MODIFIED BLOCK: Restored logic from server_22.js ---
     const roundData = {
         targetColor: getRandomColor(),
         initialColors: {
-            [playerSocketIds[0]]: startColor,
-            [playerSocketIds[1]]: startColor,
+            [playerSocketIds[0]]: getRandomColor(),
+            [playerSocketIds[1]]: getRandomColor(),
         },
+    // --- END MODIFIED BLOCK ---
         players: Object.values(room.players),
         duration: roundDuration,
         opponentPowerups: { glitch: true, snap: true } 
