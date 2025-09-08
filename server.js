@@ -21,6 +21,15 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
 });
 
+pool.query(`
+    CREATE TABLE IF NOT EXISTS time_attack_scores (
+        username TEXT PRIMARY KEY REFERENCES players(username) ON DELETE CASCADE,
+        best_time_seconds INTEGER NOT NULL DEFAULT 0
+    );
+`).then(() => console.log('✅ "time_attack_scores" table checked/created.'))
+  .catch(err => console.error('Error creating time_attack_scores table:', err));
+
+
 console.log('✅ Connected to PostgreSQL database.');
 
 // --- Game Logic and Matchmaking ---
@@ -105,15 +114,18 @@ function startNewRound(roomId, room) {
     const player1 = room.players[playerSocketIds[0]];
     const player2 = room.players[playerSocketIds[1]];
     const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
+    
+    // *** INIZIO BLOCCO MODIFICATO: Colore di partenza uguale per entrambi i giocatori ***
+    const startColor = getRandomColor();
     const roundData = {
         targetColor: getRandomColor(),
         initialColors: {
-            [playerSocketIds[0]]: getRandomColor(),
-            [playerSocketIds[1]]: getRandomColor(),
+            [playerSocketIds[0]]: startColor,
+            [playerSocketIds[1]]: startColor,
         },
+    // *** FINE BLOCCO MODIFICATO ***
         players: Object.values(room.players),
         duration: roundDuration,
-        // --- NEW: Send initial power-up state to both players ---
         opponentPowerups: { glitch: true, snap: true } 
     };
     io.to(roomId).emit('gameEvent', { roomId, event: 'roundStartData', payload: roundData });
@@ -265,9 +277,7 @@ io.on('connection', (socket) => {
         if (code) delete privateRooms[code];
     });
     
-    // --- NEW: Event handler for bonus usage ---
     socket.on('useBonus', ({ roomId, bonusType }) => {
-        // Relay the bonus usage to the other player in the room
         socket.to(roomId).emit('opponentUsedBonus', { bonusType });
     });
 
@@ -277,7 +287,12 @@ io.on('connection', (socket) => {
     
     socket.on('getLeaderboard', async ({ username }) => {
         try {
-            const top20Query = 'SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players ORDER BY rankscore DESC LIMIT 20';
+            const top20Query = `
+                SELECT 
+                    p.username, 
+                    p.rankscore, 
+                    RANK() OVER (ORDER BY p.rankscore DESC) as rank 
+                FROM players p ORDER BY p.rankscore DESC LIMIT 20`;
             const topRes = await pool.query(top20Query);
             const topRows = topRes.rows;
 
@@ -285,7 +300,9 @@ io.on('connection', (socket) => {
             let finalData = topRows.map(p => ({...p, rankScore: p.rankscore, isCurrentUser: p.username === username}));
 
             if (!isUserInTop20 && username) {
-                const userRankQuery = 'WITH Ranks AS (SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players) SELECT * FROM Ranks WHERE username = $1';
+                const userRankQuery = `
+                    WITH Ranks AS (SELECT username, rankscore, RANK() OVER (ORDER BY rankscore DESC) as rank FROM players) 
+                    SELECT * FROM Ranks WHERE username = $1`;
                 const userRes = await pool.query(userRankQuery, [username]);
                 if (userRes.rows.length > 0) {
                     const userRow = userRes.rows[0];
@@ -297,6 +314,57 @@ io.on('connection', (socket) => {
             console.error("getLeaderboard error:", err);
         }
     });
+
+    // *** INIZIO BLOCCO NUOVO: Gestori per la Time Attack Leaderboard ***
+    socket.on('submitTimeAttackScore', async ({ username, time }) => {
+        if (!username || typeof time !== 'number') return;
+        try {
+            const res = await pool.query('SELECT best_time_seconds FROM time_attack_scores WHERE username = $1', [username]);
+            if (res.rows.length > 0) {
+                if (time > res.rows[0].best_time_seconds) {
+                    await pool.query('UPDATE time_attack_scores SET best_time_seconds = $1 WHERE username = $2', [time, username]);
+                    console.log(`New best time for ${username}: ${time}s`);
+                }
+            } else {
+                await pool.query('INSERT INTO time_attack_scores (username, best_time_seconds) VALUES ($1, $2)', [username, time]);
+                console.log(`First time attack score for ${username}: ${time}s`);
+            }
+        } catch (err) {
+            console.error('Error submitting time attack score:', err);
+        }
+    });
+
+    socket.on('getTimeAttackLeaderboard', async ({ username }) => {
+        try {
+            const top20Query = `
+                SELECT 
+                    t.username, 
+                    t.best_time_seconds, 
+                    RANK() OVER (ORDER BY t.best_time_seconds DESC) as rank 
+                FROM time_attack_scores t 
+                ORDER BY t.best_time_seconds DESC 
+                LIMIT 20`;
+            const topRes = await pool.query(top20Query);
+            const topRows = topRes.rows;
+
+            const isUserInTop20 = topRows.some(p => p.username === username);
+            let finalData = topRows.map(p => ({...p, isCurrentUser: p.username === username}));
+
+            if (!isUserInTop20 && username) {
+                const userRankQuery = `
+                    WITH Ranks AS (SELECT username, best_time_seconds, RANK() OVER (ORDER BY best_time_seconds DESC) as rank FROM time_attack_scores) 
+                    SELECT * FROM Ranks WHERE username = $1`;
+                const userRes = await pool.query(userRankQuery, [username]);
+                if (userRes.rows.length > 0) {
+                    finalData.push({...userRes.rows[0], isCurrentUser: true});
+                }
+            }
+            socket.emit('timeAttackLeaderboardData', finalData);
+        } catch (err) {
+            console.error("getTimeAttackLeaderboard error:", err);
+        }
+    });
+    // *** FINE BLOCCO NUOVO ***
 
     socket.on('requestRematch', ({ roomId }) => {
         const room = gameRooms[roomId];
