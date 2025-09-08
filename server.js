@@ -434,7 +434,7 @@ io.on('connection', (socket) => {
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
             }
-            // socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' }); // <-- LINEA PROBLEMATICA COMMENTATA
+            socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
 
             const allReady = Object.values(room.players).every(p => p.isReady);
             if (allReady) {
