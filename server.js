@@ -425,6 +425,9 @@ io.on('connection', (socket) => {
 
     socket.on('leaveGame', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
 
+    // ===================================================================
+    // ======================= BLOCCO CODICE CORRETTO ======================
+    // ===================================================================
     socket.on('gameEvent', (data) => {
         const { roomId, event } = data;
         const room = gameRooms[roomId];
@@ -434,17 +437,24 @@ io.on('connection', (socket) => {
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
             }
-            socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
+            // NON notificare l'altro giocatore. Il server gestisce lo stato.
+            // La riga seguente è stata rimossa per evitare il deadlock.
+            // socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
 
             const allReady = Object.values(room.players).every(p => p.isReady);
             if (allReady) {
-                Object.values(room.players).forEach(p => p.isReady = false);
+                // Una volta che TUTTI sono pronti, il server avvia il round per tutti.
+                Object.values(room.players).forEach(p => p.isReady = false); // Resetta per il prossimo round
                 startNewRound(roomId, room);
             }
         } else {
+            // Inoltra tutti gli altri eventi di gioco
             socket.to(roomId).emit('gameEvent', data);
         }
     });
+    // ===================================================================
+    // ===================================================================
+    // ===================================================================
 
     socket.on('disconnect', () => {
         console.log(`❌ User disconnected: ${socket.id}`);
