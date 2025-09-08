@@ -112,11 +112,11 @@ function startNewRound(roomId, room) {
     room.isFinished = false;
     const playerSocketIds = Object.keys(room.players);
     if (playerSocketIds.length < 2) return;
-    
     const player1 = room.players[playerSocketIds[0]];
     const player2 = room.players[playerSocketIds[1]];
     const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
     
+    // *** MODIFICATO: Colore di partenza uguale per entrambi i giocatori ***
     const startColor = getRandomColor();
     const roundData = {
         targetColor: getRandomColor(),
@@ -126,10 +126,7 @@ function startNewRound(roomId, room) {
         },
         players: Object.values(room.players),
         duration: roundDuration,
-        powerups: {
-            [playerSocketIds[0]]: player1.powerups,
-            [playerSocketIds[1]]: player2.powerups,
-        }
+        opponentPowerups: { glitch: true, snap: true } 
     };
     io.to(roomId).emit('gameEvent', { roomId, event: 'roundStartData', payload: roundData });
 }
@@ -140,8 +137,8 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
     socket2.join(roomId);
     gameRooms[roomId] = {
         players: {
-            [socket1.id]: { ...data1, isReady: false, powerups: { glitch: true, snap: true } },
-            [socket2.id]: { ...data2, isReady: false, powerups: { glitch: true, snap: true } }
+            [socket1.id]: { ...data1, isReady: false },
+            [socket2.id]: { ...data2, isReady: false }
         },
         rematchReady: {},
         isFinished: false,
@@ -281,10 +278,6 @@ io.on('connection', (socket) => {
     });
     
     socket.on('useBonus', ({ roomId, bonusType }) => {
-        const room = gameRooms[roomId];
-        if (room && room.players[socket.id] && room.players[socket.id].powerups[bonusType]) {
-            room.players[socket.id].powerups[bonusType] = false;
-        }
         socket.to(roomId).emit('opponentUsedBonus', { bonusType });
     });
 
@@ -322,6 +315,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // *** INIZIO BLOCCO NUOVO: Gestori per la Time Attack Leaderboard ***
     socket.on('submitTimeAttackScore', async ({ username, time }) => {
         if (!username || typeof time !== 'number') return;
         try {
@@ -336,7 +330,8 @@ io.on('connection', (socket) => {
                 console.log(`First time attack score for ${username}: ${time}s`);
             }
         } catch (err) {
-            if (err.code === '23503') {
+            // Gestisce il caso in cui un utente registrato non sia ancora in 'players' (improbabile)
+            if (err.code === '23503') { // Foreign key violation
                  console.log(`Attempted to submit score for non-existent player: ${username}`);
             } else {
                 console.error('Error submitting time attack score:', err);
@@ -380,6 +375,7 @@ io.on('connection', (socket) => {
             console.error("getTimeAttackLeaderboard error:", err);
         }
     });
+    // *** FINE BLOCCO NUOVO ***
 
     socket.on('requestRematch', ({ roomId }) => {
         const room = gameRooms[roomId];
@@ -438,7 +434,7 @@ io.on('connection', (socket) => {
             if (room.players[socket.id]) {
                 room.players[socket.id].isReady = true;
             }
-            socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' });
+            // socket.to(roomId).emit('gameEvent', { roomId, event: 'playerReady' }); // <-- LINEA PROBLEMATICA COMMENTATA
 
             const allReady = Object.values(room.players).every(p => p.isReady);
             if (allReady) {
