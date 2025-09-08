@@ -21,6 +21,7 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
 });
 
+// --- NUOVO: Creazione tabella per la classifica Time Attack ---
 pool.query(`
     CREATE TABLE IF NOT EXISTS time_attack_scores (
         username TEXT PRIMARY KEY REFERENCES players(username) ON DELETE CASCADE,
@@ -115,7 +116,7 @@ function startNewRound(roomId, room) {
     const player2 = room.players[playerSocketIds[1]];
     const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
     
-    // *** INIZIO BLOCCO MODIFICATO: Colore di partenza uguale per entrambi i giocatori ***
+    // *** MODIFICATO: Colore di partenza uguale per entrambi i giocatori ***
     const startColor = getRandomColor();
     const roundData = {
         targetColor: getRandomColor(),
@@ -123,7 +124,6 @@ function startNewRound(roomId, room) {
             [playerSocketIds[0]]: startColor,
             [playerSocketIds[1]]: startColor,
         },
-    // *** FINE BLOCCO MODIFICATO ***
         players: Object.values(room.players),
         duration: roundDuration,
         opponentPowerups: { glitch: true, snap: true } 
@@ -330,7 +330,12 @@ io.on('connection', (socket) => {
                 console.log(`First time attack score for ${username}: ${time}s`);
             }
         } catch (err) {
-            console.error('Error submitting time attack score:', err);
+            // Gestisce il caso in cui un utente registrato non sia ancora in 'players' (improbabile)
+            if (err.code === '23503') { // Foreign key violation
+                 console.log(`Attempted to submit score for non-existent player: ${username}`);
+            } else {
+                console.error('Error submitting time attack score:', err);
+            }
         }
     });
 
@@ -340,8 +345,10 @@ io.on('connection', (socket) => {
                 SELECT 
                     t.username, 
                     t.best_time_seconds, 
+                    p.rankscore,
                     RANK() OVER (ORDER BY t.best_time_seconds DESC) as rank 
-                FROM time_attack_scores t 
+                FROM time_attack_scores t
+                JOIN players p ON t.username = p.username
                 ORDER BY t.best_time_seconds DESC 
                 LIMIT 20`;
             const topRes = await pool.query(top20Query);
@@ -352,7 +359,11 @@ io.on('connection', (socket) => {
 
             if (!isUserInTop20 && username) {
                 const userRankQuery = `
-                    WITH Ranks AS (SELECT username, best_time_seconds, RANK() OVER (ORDER BY best_time_seconds DESC) as rank FROM time_attack_scores) 
+                    WITH Ranks AS (
+                        SELECT t.username, t.best_time_seconds, p.rankscore, RANK() OVER (ORDER BY t.best_time_seconds DESC) as rank 
+                        FROM time_attack_scores t
+                        JOIN players p ON t.username = p.username
+                    ) 
                     SELECT * FROM Ranks WHERE username = $1`;
                 const userRes = await pool.query(userRankQuery, [username]);
                 if (userRes.rows.length > 0) {
