@@ -70,7 +70,9 @@ async function processGameResult(winnerUsername, loserUsername, roomId) {
         }
         return;
     }
-    room.isFinished = true;
+    if (room.state !== 'PRE_GAME') {
+        room.isFinished = true;
+    }
 
     try {
         const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username IN ($1, $2)', [winnerUsername, loserUsername]);
