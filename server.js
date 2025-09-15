@@ -459,6 +459,7 @@ socket.on('gameEvent', (data) => {
             // NUOVA LOGICA: Questo è il primo giocatore a dichiararsi pronto.
             // Avviamo un timer di 60 secondi.
             console.log(`[SERVER] First player ready in room ${roomId}. Starting 30s timeout.`);
+
             room.readyTimeoutId = setTimeout(() => {
                 console.log(`[SERVER] Timeout in room ${roomId}. One player did not ready up.`);
                 // Il timer è scaduto. Troviamo chi non è pronto e lo facciamo perdere.
@@ -466,6 +467,12 @@ socket.on('gameEvent', (data) => {
                 const abandoningSocketId = socketIds.find(id => !room.players[id].isReady);
                 
                 if (abandoningSocketId) {
+                    const inactiveSocket = io.sockets.sockets.get(abandoningSocketId);
+                    if (inactiveSocket) {
+                        inactiveSocket.emit('kickedForInactivity', {
+                            message: 'You have been removed from the match for inactivity.'
+                        });
+                    }
                     console.log(`[SERVER] Player ${abandoningSocketId} forfeits due to inactivity.`);
                     // Usiamo la funzione esistente per gestire l'abbandono e la sconfitta.
                     handleMatchAbandonment(roomId, abandoningSocketId);
