@@ -392,11 +392,34 @@ io.on('connection', (socket) => {
         const opponentSocketId = Object.keys(room.players).find(id => id !== abandoningSocketId);
         
         if (room.state === 'PRE_GAME') {
-            console.log(`Abandonment in ${roomId} before start. Game cancelled, no penalty.`);
-            if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
-                io.to(opponentSocketId).emit('opponentDisconnected'); 
+            // Abbandono nella schermata "Ready".
+            // NUOVA LOGICA: Controlla se la partita è classificata.
+            if (room.gameMode === 'ranked') {
+                // In modalità RANKED, questo è un forfait e deve essere registrato.
+                if (opponentSocketId) {
+                    const abandoningPlayer = room.players[abandoningSocketId];
+                    const winningPlayer = room.players[opponentSocketId];
+                    console.log(`[RANKED FORFEIT PRE-GAME] ${abandoningPlayer.username} forfeits to ${winningPlayer.username}.`);
+                    
+                    // Applica la variazione di punteggio.
+                    await processGameResult(winningPlayer.username, abandoningPlayer.username, roomId);
+
+                    // Notifica il vincitore.
+                    const winnerSocket = io.sockets.sockets.get(opponentSocketId);
+                    if (winnerSocket) {
+                        winnerSocket.emit('opponentDisconnected');
+                    }
+                }
+            } else {
+                // In modalità CASUAL, è solo un annullamento senza penalità.
+                console.log(`[CASUAL CANCEL] Abandonment in ${roomId} before start. No penalty.`);
+                if (opponentSocketId && io.sockets.sockets.has(opponentSocketId)) {
+                    io.to(opponentSocketId).emit('opponentDisconnected'); 
+                }
             }
         } else {
+            // Questa è la logica esistente per l'abbandono a partita IN CORSO.
+            // Funziona già correttamente per tutte le modalità.
             if (opponentSocketId && !room.isFinished) {
                 const abandoningPlayer = room.players[abandoningSocketId];
                 const winningPlayer = room.players[opponentSocketId];
