@@ -426,33 +426,59 @@ io.on('connection', (socket) => {
     socket.on('leaveGame', ({ roomId }) => handleMatchAbandonment(roomId, socket.id));
 
     // ===================================================================
-    // ======================= BLOCCO CODICE CORRETTO ======================
-    // ===================================================================
-    socket.on('gameEvent', (data) => {
-        const { roomId, event } = data;
-        const room = gameRooms[roomId];
-        if (!room) return;
+// ======================= BLOCCO CODICE CORRETTO ======================
+// ===================================================================
+socket.on('gameEvent', (data) => {
+    const { roomId, event } = data;
+    const room = gameRooms[roomId];
+    if (!room) return;
 
-        if (event === 'playerReady') {
-            console.log(`[SERVER] Player ${socket.id} is ready.`);
-            if (room.players[socket.id]) {
-                room.players[socket.id].isReady = true;
-            }
-            
-            const allReady = Object.values(room.players).every(p => p.isReady);
-
-            if (allReady) {
-                console.log(`[SERVER] All players in room ${roomId} are ready. Starting round.`);
-                Object.values(room.players).forEach(p => p.isReady = false);
-                startNewRound(roomId, room);
-            }
-        } else {
-            socket.to(roomId).emit('gameEvent', data);
+    if (event === 'playerReady') {
+        console.log(`[SERVER] Player ${socket.id} in room ${roomId} is ready.`);
+        if (room.players[socket.id]) {
+            room.players[socket.id].isReady = true;
         }
-    });
-    // ===================================================================
-    // ===================================================================
-    // ===================================================================
+
+        const playerStates = Object.values(room.players);
+        const readyCount = playerStates.filter(p => p.isReady).length;
+        const allReady = readyCount === playerStates.length;
+
+        if (allReady) {
+            // NUOVA LOGICA: Se entrambi sono pronti, cancella il timer di attesa.
+            if (room.readyTimeoutId) {
+                console.log(`[SERVER] Both players ready in room ${roomId}. Clearing timeout.`);
+                clearTimeout(room.readyTimeoutId);
+                room.readyTimeoutId = null; // Pulisci il riferimento al timer
+            }
+            // La logica esistente per iniziare il round prosegue...
+            console.log(`[SERVER] All players in room ${roomId} are ready. Starting round.`);
+            Object.values(room.players).forEach(p => p.isReady = false);
+            startNewRound(roomId, room);
+
+        } else if (readyCount === 1) {
+            // NUOVA LOGICA: Questo è il primo giocatore a dichiararsi pronto.
+            // Avviamo un timer di 60 secondi.
+            console.log(`[SERVER] First player ready in room ${roomId}. Starting 30s timeout.`);
+            room.readyTimeoutId = setTimeout(() => {
+                console.log(`[SERVER] Timeout in room ${roomId}. One player did not ready up.`);
+                // Il timer è scaduto. Troviamo chi non è pronto e lo facciamo perdere.
+                const socketIds = Object.keys(room.players);
+                const abandoningSocketId = socketIds.find(id => !room.players[id].isReady);
+                
+                if (abandoningSocketId) {
+                    console.log(`[SERVER] Player ${abandoningSocketId} forfeits due to inactivity.`);
+                    // Usiamo la funzione esistente per gestire l'abbandono e la sconfitta.
+                    handleMatchAbandonment(roomId, abandoningSocketId);
+                }
+            }, 30000); // 30 secondi (30 * 1000 millisecondi)
+        }
+    } else {
+        socket.to(roomId).emit('gameEvent', data);
+    }
+});
+// ===================================================================
+// ===================================================================
+// ===================================================================
 
     socket.on('disconnect', () => {
         console.log(`❌ User disconnected: ${socket.id}`);
