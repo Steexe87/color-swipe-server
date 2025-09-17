@@ -110,7 +110,9 @@ function startNewRound(roomId, room) {
         console.log(`Game ${roomId} officially started. State: IN_PROGRESS.`);
     }
     
-    room.rematchReady = {};
+    // RESETTA LO STATO "PRONTO" PER IL PROSSIMO ROUND/PARTITA
+    Object.values(room.players).forEach(p => p.isReady = false);
+    
     room.isFinished = false;
     const playerSocketIds = Object.keys(room.players);
     if (playerSocketIds.length < 2) return;
@@ -118,7 +120,6 @@ function startNewRound(roomId, room) {
     const player2 = room.players[playerSocketIds[1]];
     const roundDuration = getRoundDuration(player1.rankScore, player2.rankScore);
     
-    // *** MODIFICATO: Colore di partenza uguale per entrambi i giocatori ***
     const startColor = getRandomColor();
     const roundData = {
         targetColor: getRandomColor(),
@@ -128,7 +129,8 @@ function startNewRound(roomId, room) {
         },
         players: Object.values(room.players),
         duration: roundDuration,
-        opponentPowerups: { glitch: true, snap: true } 
+        // CORREZIONE PUNTO 3: Invia lo stato aggiornato dei bonus
+        powerupStates: room.powerups 
     };
     io.to(roomId).emit('gameEvent', { roomId, event: 'roundStartData', payload: roundData });
 }
@@ -141,6 +143,11 @@ function startGameForPair(socket1, data1, socket2, data2, gameMode) {
         players: {
             [socket1.id]: { ...data1, isReady: false },
             [socket2.id]: { ...data2, isReady: false }
+        },
+        // CORREZIONE PUNTO 3: Inizializza lo stato dei bonus sul server
+        powerups: {
+            [socket1.id]: { glitch: true, snap: true },
+            [socket2.id]: { glitch: true, snap: true }
         },
         rematchReady: {},
         isFinished: false,
@@ -280,6 +287,11 @@ io.on('connection', (socket) => {
     });
     
     socket.on('useBonus', ({ roomId, bonusType }) => {
+        const room = gameRooms[roomId];
+        if (room && room.powerups && room.powerups[socket.id]) {
+            room.powerups[socket.id][bonusType] = false;
+            console.log(`[SERVER] Player ${socket.id} used ${bonusType}. State updated.`);
+        }
         socket.to(roomId).emit('opponentUsedBonus', { bonusType });
     });
 
@@ -382,9 +394,23 @@ io.on('connection', (socket) => {
     socket.on('requestRematch', ({ roomId }) => {
         const room = gameRooms[roomId];
         if (!room) return;
+
+        console.log(`[REMATCH] Player ${socket.id} requested a rematch for room ${roomId}.`);
         room.rematchReady[socket.id] = true;
         const opponentId = Object.keys(room.players).find(id => id !== socket.id);
-        if (opponentId && room.rematchReady[opponentId]) startNewRound(roomId, room);
+
+        if (opponentId && room.rematchReady[opponentId]) {
+            console.log(`[REMATCH] Both players are ready in room ${roomId}. Starting new game.`);
+            // Resetta lo stato dei bonus per la nuova partita
+            Object.keys(room.powerups).forEach(socketId => {
+                room.powerups[socketId] = { glitch: true, snap: true };
+            });
+            // Resetta lo stato di rematch
+            room.rematchReady = {};
+            
+            // Invia un comando per far ripartire il gioco da zero sui client
+            io.to(roomId).emit('startNewGame'); 
+        }
     });
     
     const handleMatchAbandonment = async (roomId, abandoningSocketId) => {
