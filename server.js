@@ -90,11 +90,17 @@ async function processGameResult(winnerUsername, loserUsername, roomId) {
         await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newWinnerRating, winnerUsername]);
         await pool.query('UPDATE players SET rankscore = $1 WHERE username = $2', [newLoserRating, loserUsername]);
         
-        const winnerSocketId = Object.keys(room.players).find(id => room.players[id].username === winnerUsername);
-        const loserSocketId = Object.keys(room.players).find(id => room.players[id].username === loserUsername);
-
-        if (winnerSocketId) io.to(winnerSocketId).emit('updateRankScore', { newRankScore: newWinnerRating });
-        if (loserSocketId) io.to(loserSocketId).emit('updateRankScore', { newRankScore: newLoserRating });
+        // --- INIZIO MODIFICA ---
+        // Invece di inviare aggiornamenti individuali, creiamo un unico oggetto
+        // con i nuovi punteggi di entrambi i giocatori.
+        const scoreUpdatePayload = {
+            [winnerUsername]: newWinnerRating,
+            [loserUsername]: newLoserRating
+        };
+        
+        // Inviamo l'oggetto a tutta la stanza (room) con un nuovo evento 'updateAllScores'.
+        io.to(roomId).emit('updateAllScores', scoreUpdatePayload);
+        // --- FINE MODIFICA ---
 
         console.log(`Scores updated: ${winnerUsername} ${newWinnerRating}, ${loserUsername} ${newLoserRating}`);
     } catch (err) {
