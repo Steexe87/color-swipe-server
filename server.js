@@ -397,7 +397,7 @@ io.on('connection', (socket) => {
     });
     // *** FINE BLOCCO NUOVO ***
 
-    socket.on('requestRematch', ({ roomId }) => {
+    socket.on('requestRematch', async ({ roomId }) => { // Aggiunto async
         const room = gameRooms[roomId];
         if (!room) return;
 
@@ -407,15 +407,39 @@ io.on('connection', (socket) => {
 
         if (opponentId && room.rematchReady[opponentId]) {
             console.log(`[REMATCH] Both players are ready in room ${roomId}. Starting new game.`);
-            // Resetta lo stato dei bonus per la nuova partita
-            Object.keys(room.powerups).forEach(socketId => {
-                room.powerups[socketId] = { glitch: true, snap: true };
-            });
-            // Resetta lo stato di rematch
-            room.rematchReady = {};
-            
-            // Invia un comando per far ripartire il gioco da zero sui client
-            io.to(roomId).emit('startNewGame'); 
+
+            try {
+                // --- INIZIO MODIFICA ---
+                // 1. Recupera i nomi utente dalla stanza
+                const player1Username = room.players[socket.id].username;
+                const player2Username = room.players[opponentId].username;
+
+                // 2. Interroga il database per i punteggi più recenti
+                const playersRes = await pool.query('SELECT username, rankscore FROM players WHERE username = $1 OR username = $2', [player1Username, player2Username]);
+                if (playersRes.rows.length < 2) throw new Error("Could not fetch both players for rematch.");
+                
+                const updatedPlayersData = playersRes.rows;
+
+                // 3. Aggiorna lo stato dei giocatori nella stanza sul server
+                room.players[socket.id].rankScore = updatedPlayersData.find(p => p.username === player1Username).rankscore;
+                room.players[opponentId].rankScore = updatedPlayersData.find(p => p.username === player2Username).rankscore;
+                // --- FINE MODIFICA ---
+
+                // Resetta lo stato dei bonus per la nuova partita
+                Object.keys(room.powerups).forEach(socketId => {
+                    room.powerups[socketId] = { glitch: true, snap: true };
+                });
+                // Resetta lo stato di rematch
+                room.rematchReady = {};
+                
+                // Invia un comando per far ripartire il gioco con i dati aggiornati
+                io.to(roomId).emit('startNewGame', { players: updatedPlayersData });
+
+            } catch (error) {
+                console.error("Rematch data fetch failed:", error);
+                // In caso di errore, avvia comunque il gioco con i dati presenti in memoria
+                io.to(roomId).emit('startNewGame', { players: Object.values(room.players) });
+            }
         }
     });
     
