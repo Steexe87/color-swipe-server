@@ -447,19 +447,17 @@ io.on('connection', (socket) => {
     socket.on('rejoinPrivateRoom', ({ code, playerData }) => {
     const roomToRejoin = privateRooms[code];
     if (!roomToRejoin) {
-        // Se la stanza non esiste (magari il timer è scaduto), informa l'utente.
         return socket.emit('joinRoomError', 'Room not found or has expired.');
     }
 
-    // Se la stanza esiste, significa che l'utente si è ricollegato in tempo.
-    // Annulliamo il timer di distruzione!
+    // L'utente si è ricollegato in tempo! Annulliamo la distruzione.
     if (destructionTimers[code]) {
         console.log(`Creator ${playerData.username} rejoined room ${code}. Cancelling destruction timer.`);
         clearTimeout(destructionTimers[code]);
         delete destructionTimers[code];
     }
 
-    // Aggiorniamo il socket del creatore con quello nuovo, perché è cambiato dopo la riconnessione.
+    // Aggiorniamo il socket del creatore con quello nuovo, perché è cambiato
     roomToRejoin.creatorSocket = socket;
     console.log(`Creator's socket updated for room ${code}.`);
 
@@ -595,7 +593,7 @@ socket.on('gameEvent', (data) => {
     socket.on('disconnect', () => {
     console.log(`❌ User disconnected: ${socket.id}`);
     
-    // Pulisce le code di matchmaking (questa parte era già corretta)
+    // Pulisce le code di matchmaking
     matchmakingQueues.ranked = matchmakingQueues.ranked.filter(p => p.socket.id !== socket.id);
     matchmakingQueues.casual = matchmakingQueues.casual.filter(p => p.socket.id !== socket.id);
 
@@ -611,12 +609,12 @@ socket.on('gameEvent', (data) => {
         }, 60000); // 60 secondi
     }
     
-    // Gestisce l'abbandono da una partita già iniziata (questa parte era già corretta)
+    // Gestisce l'abbandono da una partita già iniziata
     const roomId = Object.keys(gameRooms).find(r => gameRooms[r] && gameRooms[r].players[socket.id]);
     if (roomId) {
         handleMatchAbandonment(roomId, socket.id);
     }
-    });
+});
 });
 
 server.listen(PORT, () => {
