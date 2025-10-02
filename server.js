@@ -590,6 +590,33 @@ socket.on('gameEvent', (data) => {
 // ===================================================================
 // ===================================================================
 
+socket.on('deleteAccount', async () => {
+    // Usiamo lo username associato al socket al momento del login per sicurezza
+    const usernameToDelete = socket.username;
+
+    if (!usernameToDelete) {
+        // L'utente non è loggato o il suo username non è associato, non fare nulla
+        return;
+    }
+
+    try {
+        console.log(`[ACCOUNT DELETION] Request received for user: ${usernameToDelete}`);
+        // Esegui la query per eliminare l'utente dalla tabella 'players'
+        // La cancellazione a cascata (ON DELETE CASCADE) eliminerà anche il punteggio in time_attack_scores
+        const deleteResult = await pool.query('DELETE FROM players WHERE username = $1', [usernameToDelete]);
+
+        if (deleteResult.rowCount > 0) {
+            console.log(`[ACCOUNT DELETION] Successfully deleted user: ${usernameToDelete}`);
+            // Invia la conferma al client
+            socket.emit('deleteSuccess');
+        } else {
+            console.log(`[ACCOUNT DELETION] User not found for deletion: ${usernameToDelete}`);
+        }
+    } catch (err) {
+        console.error(`[ACCOUNT DELETION] Error deleting user ${usernameToDelete}:`, err);
+    }
+
+
     socket.on('disconnect', () => {
     console.log(`❌ User disconnected: ${socket.id}`);
     
@@ -615,31 +642,7 @@ socket.on('gameEvent', (data) => {
         handleMatchAbandonment(roomId, socket.id);
     }
 
-    socket.on('deleteAccount', async () => {
-    // Usiamo lo username associato al socket al momento del login per sicurezza
-    const usernameToDelete = socket.username;
-
-    if (!usernameToDelete) {
-        // L'utente non è loggato o il suo username non è associato, non fare nulla
-        return;
-    }
-
-    try {
-        console.log(`[ACCOUNT DELETION] Request received for user: ${usernameToDelete}`);
-        // Esegui la query per eliminare l'utente dalla tabella 'players'
-        // La cancellazione a cascata (ON DELETE CASCADE) eliminerà anche il punteggio in time_attack_scores
-        const deleteResult = await pool.query('DELETE FROM players WHERE username = $1', [usernameToDelete]);
-
-        if (deleteResult.rowCount > 0) {
-            console.log(`[ACCOUNT DELETION] Successfully deleted user: ${usernameToDelete}`);
-            // Invia la conferma al client
-            socket.emit('deleteSuccess');
-        } else {
-            console.log(`[ACCOUNT DELETION] User not found for deletion: ${usernameToDelete}`);
-        }
-    } catch (err) {
-        console.error(`[ACCOUNT DELETION] Error deleting user ${usernameToDelete}:`, err);
-    }
+    
 });
 
 
